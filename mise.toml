@@ -1,0 +1,41 @@
+# このプロジェクトが使う言語のバージョン。
+# mise を有効にしたシェルでこのディレクトリに入ると自動で切り替わる。
+
+[tools]
+# バックエンド本体。FastAPI と APScheduler がこの上で動く
+python = "3.13"
+# フロントエンドの JS 構文チェック（node --check）にのみ使う。
+# アプリの実行には不要
+node = "24"
+
+[env]
+# backend/.venv を自動で作って有効化する。
+# これで `pytest` や `uvicorn` を .venv/bin/ を書かずに叩ける
+_.python.venv = { path = "backend/.venv", create = true }
+
+[tasks.setup]
+description = "依存パッケージをインストールする"
+run = "pip install -r backend/requirements-dev.txt"
+
+[tasks.test]
+description = "テストを実行する"
+dir = "backend"
+run = "pytest"
+
+[tasks.dev]
+description = "モックサーバ + 管理ツールを起動する"
+run = "./scripts/dev.sh"
+
+[tasks.checkjs]
+description = "フロントエンドの JS を構文チェックする"
+run = """
+python3 -c "
+import re, pathlib, subprocess, tempfile, sys
+html = pathlib.Path('backend/static/index.html').read_text()
+js = re.search(r'<script>(.*?)</script>', html, re.S).group(1)
+with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+    fh.write(js)
+    path = fh.name
+sys.exit(subprocess.run(['node', '--check', path]).returncode)
+"
+"""

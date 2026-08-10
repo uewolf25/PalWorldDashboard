@@ -1,0 +1,32 @@
+[Unit]
+Description=dashboard-Pal (Palworld Server Manager Web UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=palmanager
+Group=palmanager
+WorkingDirectory=/opt/dashboard-Pal/backend
+EnvironmentFile=/etc/dashboard-Pal.env
+ExecStart=/opt/dashboard-Pal/backend/.venv/bin/uvicorn app.main:app --host ${APP_HOST} --port ${APP_PORT}
+Restart=always
+RestartSec=5
+
+# バックアップとスケジュール定義の保存先
+StateDirectory=dashboard-Pal
+RuntimeDirectory=dashboard-Pal
+
+# --- 最低限のサンドボックス ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# PalWorldSettings.ini を書き換えるため、その配置先だけ書き込み許可する
+ReadWritePaths=/home/steam/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer
+
+[Install]
+WantedBy=multi-user.target

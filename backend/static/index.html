@@ -1,0 +1,1311 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palworld Server Manager</title>
+<style>
+:root {
+  --bg: #12141a; --panel: #1a1d26; --panel2: #222634; --line: #2e3342;
+  --fg: #e6e9f0; --muted: #97a0b5; --accent: #4da3ff; --ok: #3bbf7d;
+  --warn: #e8a33d; --crit: #ef5350; --radius: 10px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  font-size: 14px; line-height: 1.6;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+.layout { display: flex; min-height: 100vh; }
+
+/* --- サイドバー --- */
+.sidebar {
+  width: 220px; flex: 0 0 220px; background: var(--panel);
+  border-right: 1px solid var(--line); padding: 16px 12px; display: flex; flex-direction: column; gap: 4px;
+}
+.brand { font-weight: 700; font-size: 15px; padding: 4px 8px 12px; display: flex; align-items: center; gap: 8px; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--panel2); color: var(--muted); }
+.badge.production { background: #40202a; color: #ff8f8f; }
+.navbtn {
+  background: none; border: 0; text-align: left; padding: 9px 12px;
+  border-radius: var(--radius); cursor: pointer; color: var(--muted);
+}
+.navbtn:hover { background: var(--panel2); color: var(--fg); }
+.navbtn.active { background: var(--accent); color: #08131f; font-weight: 600; }
+.sidebar .spacer { flex: 1; }
+.statusdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+.statusdot.online { background: var(--ok); }
+.statusdot.offline { background: var(--crit); }
+
+/* --- メイン --- */
+.main { flex: 1; min-width: 0; padding: 20px 24px 60px; }
+.topbar { display: none; align-items: center; gap: 12px; margin-bottom: 12px; }
+.hamburger { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+h1 { font-size: 19px; margin: 0 0 16px; }
+h2 { font-size: 15px; margin: 24px 0 10px; color: var(--muted); font-weight: 600; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+.card .label { color: var(--muted); font-size: 12px; }
+.card .value { font-size: 26px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.card .sub { color: var(--muted); font-size: 12px; }
+.value.warn { color: var(--warn); } .value.crit { color: var(--crit); } .value.ok { color: var(--ok); }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+tbody tr:hover { background: var(--panel2); }
+.tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; }
+
+button.btn {
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 14px; cursor: pointer;
+}
+button.btn:hover { border-color: var(--accent); }
+button.btn.primary { background: var(--accent); color: #08131f; border-color: var(--accent); font-weight: 600; }
+button.btn.danger { border-color: #5a2a2a; color: #ff9d9d; }
+button.btn.danger:hover { background: #3a1f1f; }
+button.btn.solid-danger { background: var(--crit); border-color: var(--crit); color: #2a0d0d; font-weight: 600; }
+button.btn.solid-danger:hover { background: #ff6b68; }
+button.btn:disabled { opacity: .45; cursor: not-allowed; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+input[type=text], input[type=number], input[type=date], input[type=time], select, textarea {
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+}
+textarea { width: 100%; min-height: 320px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; white-space: pre; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+
+/* --- モーダル --- */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.62); z-index: 100;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.modal {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  width: 100%; max-width: 520px; max-height: 88vh; display: flex; flex-direction: column;
+  box-shadow: 0 24px 60px rgba(0,0,0,.5);
+}
+.modal-head { padding: 18px 20px 10px; border-bottom: 1px solid var(--line); }
+.modal-head h3 { margin: 0; font-size: 16px; }
+.modal-head .lead { color: var(--muted); font-size: 13px; margin-top: 6px; }
+.modal-body { padding: 16px 20px; overflow-y: auto; }
+.modal-foot { padding: 12px 20px 18px; display: flex; gap: 8px; justify-content: flex-end; border-top: 1px solid var(--line); }
+.modal .field { margin-bottom: 14px; }
+.modal .field > label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+.modal .field input[type=text], .modal .field select { width: 100%; }
+.modal .error { color: #ff9d9d; font-size: 12.5px; min-height: 1.2em; }
+/* モーダル内外どちらでも使う（サーバ操作パネルの進行中表示にも） */
+.warnbox { background: #3a1c1c; border: 1px solid #6d2f2f; border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+.infobox { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+.modal .warnbox, .modal .infobox { margin-bottom: 14px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  border: 1px solid var(--line); background: var(--panel2); border-radius: 99px;
+  padding: 5px 12px; cursor: pointer; font-size: 13px; user-select: none;
+}
+.chip.on { background: var(--accent); border-color: var(--accent); color: #08131f; font-weight: 600; }
+
+#toast { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
+.toast { background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  padding: 10px 14px; border-radius: 8px; max-width: 340px; }
+.toast.err { border-left-color: var(--crit); }
+.toast.ok { border-left-color: var(--ok); }
+
+#log { background: #0c0e13; border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px; height: 60vh; overflow-y: auto; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+#log div { white-space: pre-wrap; word-break: break-all; }
+#log .app { color: var(--accent); }
+
+.banner { border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px; display: none; }
+.banner.show { display: block; }
+.banner.crit { background: #3a1c1c; border: 1px solid #6d2f2f; }
+.banner.warn { background: #3a3018; border: 1px solid #6d5a2f; }
+
+canvas { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+
+.backdrop { display: none; }
+@media (max-width: 700px) {
+  .layout { display: block; }
+  .topbar { display: flex; }
+  .main { padding: 14px 14px 60px; }
+  .sidebar {
+    position: fixed; inset: 0 auto 0 0; z-index: 40; transform: translateX(-100%);
+    transition: transform .2s ease; width: 240px;
+  }
+  .sidebar.open { transform: none; }
+  .backdrop.show { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 30; }
+  .cards { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .modal { max-height: 92vh; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar" id="sidebar"></nav>
+  <div class="backdrop" id="backdrop"></div>
+  <main class="main">
+    <div class="topbar">
+      <button class="hamburger" id="hamburger" aria-label="メニュー">☰</button>
+      <strong>Palworld Server Manager</strong>
+    </div>
+    <div class="banner" id="banner"></div>
+    <div id="view"></div>
+  </main>
+</div>
+<div id="toast"></div>
+<div id="modal-root"></div>
+
+<script>
+"use strict";
+
+// --------------------------------------------------------------------------
+// DOM ヘルパ。値は必ず textContent で入れる（サーバ名やプレイヤー名に
+// タグが混ざっても実行させないため）。
+// --------------------------------------------------------------------------
+function el(tag, props, children) {
+  const node = document.createElement(tag);
+  if (props) {
+    for (const [k, v] of Object.entries(props)) {
+      if (v === null || v === undefined) continue;
+      if (k === "class") node.className = v;
+      else if (k === "text") node.textContent = v;
+      else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
+      else node.setAttribute(k, v);
+    }
+  }
+  for (const child of [].concat(children || [])) {
+    if (child === null || child === undefined || child === false) continue;
+    node.appendChild(typeof child === "string" || typeof child === "number"
+      ? document.createTextNode(String(child)) : child);
+  }
+  return node;
+}
+const $ = (id) => document.getElementById(id);
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+function toast(message, kind) {
+  const t = el("div", { class: "toast " + (kind || ""), text: message });
+  $("toast").appendChild(t);
+  setTimeout(() => t.remove(), 4500);
+}
+
+async function api(path, options) {
+  const resp = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, options));
+  let body = null;
+  try { body = await resp.json(); } catch (e) { body = null; }
+  if (!resp.ok) {
+    let detail = "HTTP " + resp.status;
+    if (body && body.detail) {
+      detail = typeof body.detail === "string" ? body.detail
+        // FastAPI のバリデーションエラーは配列で来る
+        : body.detail.map(d => (d.loc ? d.loc[d.loc.length - 1] + ": " : "") + d.msg).join(" / ");
+    }
+    throw new Error(detail);
+  }
+  return body;
+}
+const post = (p, b) => api(p, { method: "POST", body: JSON.stringify(b || {}) });
+const put = (p, b) => api(p, { method: "PUT", body: JSON.stringify(b || {}) });
+const patch = (p, b) => api(p, { method: "PATCH", body: JSON.stringify(b || {}) });
+const del = (p) => api(p, { method: "DELETE" });
+
+function fmtDuration(sec) {
+  if (sec === null || sec === undefined) return "-";
+  sec = Math.floor(sec);
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600),
+        m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  if (d) return d + "日" + h + "時間";
+  if (h) return h + "時間" + m + "分";
+  if (m) return m + "分" + s + "秒";
+  return s + "秒";
+}
+function fmtTime(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso) : d.toLocaleString("ja-JP", { hour12: false });
+}
+function fmtTs(ts) {
+  return ts ? new Date(ts * 1000).toLocaleString("ja-JP", { hour12: false }) : "-";
+}
+// 秒数を「5分前」のような表示に
+function offsetLabel(sec) {
+  if (sec >= 60 && sec % 60 === 0) return (sec / 60) + "分前";
+  if (sec >= 60) return Math.floor(sec / 60) + "分" + (sec % 60) + "秒前";
+  return sec + "秒前";
+}
+
+// --------------------------------------------------------------------------
+// モーダル
+// --------------------------------------------------------------------------
+// opts: { title, lead, body[], confirmLabel, danger, validate() -> string|null,
+//         onConfirm() -> Promise }
+function openModal(opts) {
+  const root = $("modal-root");
+  const errorBox = el("div", { class: "error" });
+
+  const confirmBtn = el("button", {
+    class: "btn " + (opts.danger ? "solid-danger" : "primary"),
+    text: opts.confirmLabel || "実行",
+  });
+  const cancelBtn = el("button", { class: "btn", text: "キャンセル" });
+
+  const panel = el("div", { class: "modal", role: "dialog", "aria-modal": "true" }, [
+    el("div", { class: "modal-head" }, [
+      el("h3", { text: opts.title }),
+      opts.lead ? el("div", { class: "lead", text: opts.lead }) : null,
+    ]),
+    el("div", { class: "modal-body" }, [].concat(opts.body || [], [errorBox])),
+    el("div", { class: "modal-foot" }, [cancelBtn, confirmBtn]),
+  ]);
+  const overlay = el("div", { class: "modal-overlay" }, panel);
+
+  function close() {
+    overlay.remove();
+    document.removeEventListener("keydown", onKey);
+  }
+  function onKey(ev) {
+    if (ev.key === "Escape") close();
+  }
+  overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+  cancelBtn.addEventListener("click", close);
+  document.addEventListener("keydown", onKey);
+
+  confirmBtn.addEventListener("click", async () => {
+    errorBox.textContent = "";
+    if (opts.validate) {
+      const err = opts.validate();
+      if (err) { errorBox.textContent = err; return; }
+    }
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    try {
+      await opts.onConfirm();
+      close();
+    } catch (e) {
+      errorBox.textContent = e.message;
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  });
+
+  root.appendChild(overlay);
+  // 最初の入力欄にフォーカス、無ければ確認ボタン
+  const firstInput = panel.querySelector("input, select, textarea");
+  (firstInput || confirmBtn).focus();
+  return { close };
+}
+
+function field(labelText, control, hintText) {
+  return el("div", { class: "field" }, [
+    el("label", { text: labelText }),
+    control,
+    hintText ? el("div", { class: "muted small", text: hintText }) : null,
+  ]);
+}
+
+// --------------------------------------------------------------------------
+// 予告タイミングの選択（チップ + 自由入力）
+// --------------------------------------------------------------------------
+const OFFSET_PRESETS = [600, 300, 180, 60, 30, 10];
+
+function offsetPicker(selected) {
+  const chosen = new Set(selected || [300, 60, 30]);
+  const custom = el("input", { type: "text", placeholder: "任意の秒数をカンマ区切りで（例: 900,120）" });
+  const chips = el("div", { class: "chips" });
+
+  for (const sec of OFFSET_PRESETS) {
+    const chip = el("div", {
+      class: "chip" + (chosen.has(sec) ? " on" : ""),
+      text: offsetLabel(sec),
+      role: "button",
+      tabindex: "0",
+    });
+    const toggle = () => {
+      if (chosen.has(sec)) { chosen.delete(sec); chip.classList.remove("on"); }
+      else { chosen.add(sec); chip.classList.add("on"); }
+    };
+    chip.addEventListener("click", toggle);
+    chip.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); }
+    });
+    chips.appendChild(chip);
+  }
+
+  // プリセットに無い値は自由入力欄に戻しておく
+  const extras = (selected || []).filter(s => !OFFSET_PRESETS.includes(s));
+  if (extras.length) custom.value = extras.join(",");
+
+  function values() {
+    const out = new Set(chosen);
+    for (const part of custom.value.split(",")) {
+      const n = Number(part.trim());
+      if (part.trim() && Number.isFinite(n) && n >= 0) out.add(n);
+    }
+    return Array.from(out).sort((a, b) => b - a);
+  }
+  return {
+    node: el("div", null, [chips, el("div", { style: "margin-top:8px" }, custom)]),
+    values,
+  };
+}
+
+// アナウンス文 + 予告タイミングの入力セット（再起動/停止/予約で共用）
+function announceFields(defaults) {
+  const message = el("input", {
+    type: "text",
+    value: (defaults && defaults.message) || "",
+    placeholder: "サーバーは{time}後に再起動します。",
+    maxlength: "500",
+  });
+  const picker = offsetPicker(defaults && defaults.offsets);
+
+  return {
+    nodes: [
+      field("ゲーム内アナウンス文（必須）", message,
+        "{time} が残り時間に置き換わります。省略すると毎回同じ文面で流れます。"),
+      field("予告タイミング（必須・1つ以上）", picker.node,
+        "選んだタイミングごとにゲーム内へ予告します。一番早いものが実行までの猶予になります。"),
+    ],
+    validate() {
+      if (!message.value.trim()) return "アナウンス文を入力してください";
+      if (!picker.values().length) return "予告タイミングを1つ以上選んでください";
+      return null;
+    },
+    payload() {
+      return { announce_message: message.value.trim(), notice_offsets: picker.values() };
+    },
+  };
+}
+
+// --------------------------------------------------------------------------
+// サーバ操作モーダル（再起動 / 停止 / 起動）
+// --------------------------------------------------------------------------
+function openSequenceModal(mode, onDone) {
+  const isStop = mode === "stop";
+  const label = isStop ? "停止" : "再起動";
+  const template = state.config
+    ? (isStop ? state.config.stop_announce_template : state.config.restart_announce_template)
+    : "";
+  const fields = announceFields({
+    message: template,
+    offsets: (state.config && state.config.notice_offsets) || [300, 60, 30],
+  });
+  const reason = el("input", { type: "text", placeholder: "例: 定期メンテナンス", value: "手動" });
+
+  openModal({
+    title: `サーバーを${label}します`,
+    lead: `予告アナウンスを流したあと、ワールドを保存してから${label}します。保存に失敗した場合は${label}を中止します。`,
+    danger: true,
+    confirmLabel: `${label}シーケンスを開始`,
+    body: [
+      el("div", { class: "warnbox" },
+        isStop ? "停止するとプレイヤーは全員切断され、サーバは起動しません。再度動かすには「サーバーを起動」が必要です。"
+               : "再起動中はプレイヤーが全員切断されます。"),
+      el("div", { class: "field" }, [el("label", { text: "理由（Discord に記録されます）" }), reason]),
+    ].concat(fields.nodes),
+    validate: fields.validate,
+    async onConfirm() {
+      const payload = Object.assign({ reason: reason.value.trim() || "手動" }, fields.payload());
+      await post(isStop ? "/api/shutdown" : "/api/restart", payload);
+      toast(`${label}シーケンスを開始しました`, "ok");
+      if (onDone) onDone();
+    },
+  });
+}
+
+function openStartModal(onDone) {
+  const reason = el("input", { type: "text", placeholder: "例: メンテ明け", value: "手動" });
+  openModal({
+    title: "サーバーを起動します",
+    lead: "systemd ユニットを起動します。停止中のサーバにはアナウンスを送れないため、予告はありません。",
+    confirmLabel: "起動する",
+    body: [
+      el("div", { class: "infobox", text: "既に起動している場合は何も起きません。" }),
+      el("div", { class: "field" }, [el("label", { text: "理由（Discord に記録されます）" }), reason]),
+    ],
+    async onConfirm() {
+      await post("/api/service/start", { reason: reason.value.trim() || "手動" });
+      toast("起動コマンドを実行しました", "ok");
+      if (onDone) onDone();
+    },
+  });
+}
+
+// --------------------------------------------------------------------------
+// 画面定義
+// --------------------------------------------------------------------------
+const VIEWS = [
+  { id: "dashboard", name: "ダッシュボード", render: renderDashboard },
+  { id: "players", name: "プレイヤー", render: renderPlayers },
+  { id: "world", name: "ワールド", render: renderWorld },
+  { id: "history", name: "稼働履歴", render: renderHistory },
+  { id: "settings", name: "サーバ設定", render: renderSettings },
+  { id: "schedules", name: "再起動予約", render: renderSchedules },
+  { id: "logs", name: "ログ", render: renderLogs },
+];
+
+const state = {
+  view: "dashboard",
+  config: null,
+  status: null,
+  refresher: null,   // 各画面の定期更新タイマー
+  ws: null,
+};
+
+function setView(id) {
+  state.view = id;
+  if (state.refresher) { clearInterval(state.refresher); state.refresher = null; }
+  if (state.ws) { state.ws.close(); state.ws = null; }
+  buildSidebar();
+  closeDrawer();
+  const view = VIEWS.find(v => v.id === id) || VIEWS[0];
+  const root = $("view");
+  clear(root);
+  view.render(root);
+}
+
+function buildSidebar() {
+  const bar = $("sidebar");
+  clear(bar);
+  const env = state.config ? state.config.env : "";
+  bar.appendChild(el("div", { class: "brand" }, [
+    "Palworld Manager",
+    env ? el("span", { class: "badge " + env, text: env }) : null,
+  ]));
+  for (const v of VIEWS) {
+    bar.appendChild(el("button", {
+      class: "navbtn" + (v.id === state.view ? " active" : ""),
+      text: v.name,
+      onclick: () => setView(v.id),
+    }));
+  }
+  bar.appendChild(el("div", { class: "spacer" }));
+  const online = state.status ? state.status.online : null;
+  bar.appendChild(el("div", { class: "muted", style: "padding:8px 12px;font-size:12px" }, [
+    el("span", { class: "statusdot " + (online === null ? "" : online ? "online" : "offline") }),
+    online === null ? "接続確認中" : online ? "サーバ稼働中" : "サーバ応答なし",
+  ]));
+}
+
+function showBanner(text, kind) {
+  const b = $("banner");
+  b.className = "banner " + (kind || "warn") + (text ? " show" : "");
+  b.textContent = text || "";
+}
+
+// --------------------------------------------------------------------------
+// アナウンス履歴（ダッシュボードと共用）
+// --------------------------------------------------------------------------
+function announcementTable(records) {
+  if (!records.length) {
+    return el("div", { class: "muted", style: "padding:16px", text: "アナウンス履歴はまだありません" });
+  }
+  const wrap = el("div", { class: "tablewrap" });
+  const table = el("table");
+  table.appendChild(el("thead", null, el("tr", null,
+    ["日時", "区分", "内容", "宛先", "結果"].map(h => el("th", { text: h })))));
+  const tbody = el("tbody");
+  for (const r of records) {
+    const targets = [];
+    if (r.to_game) targets.push("ゲーム内");
+    if (r.to_discord) targets.push("Discord");
+    tbody.appendChild(el("tr", null, [
+      el("td", { class: "small", text: fmtTs(r.ts) }),
+      el("td", { class: "small", text: r.source_label }),
+      el("td", null, [
+        el("div", { text: r.message }),
+        r.reason ? el("div", { class: "muted small", text: "理由: " + r.reason }) : null,
+      ]),
+      el("td", { class: "muted small", text: targets.join(" / ") || "-" }),
+      el("td", { class: "small " + (r.ok ? "" : "muted") },
+        r.ok ? "成功" : "失敗"),
+    ]));
+    if (!r.ok && r.detail) {
+      tbody.appendChild(el("tr", null,
+        el("td", { colspan: "5", class: "muted small", text: r.detail })));
+    }
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  return wrap;
+}
+
+// --------------------------------------------------------------------------
+// ダッシュボード（1秒ごとに自動更新）
+// --------------------------------------------------------------------------
+function card(label, value, sub, cls) {
+  return el("div", { class: "card" }, [
+    el("div", { class: "label", text: label }),
+    el("div", { class: "value " + (cls || ""), text: value }),
+    sub ? el("div", { class: "sub", text: sub }) : null,
+  ]);
+}
+
+function renderDashboard(root) {
+  const cards = el("div", { class: "cards" });
+  const restartBox = el("div", { class: "panel", style: "margin-top:16px" });
+  const historyBox = el("div");
+
+  root.appendChild(el("h1", { text: "ダッシュボード" }));
+  root.appendChild(cards);
+
+  // --- アナウンス送信 ---
+  const announceInput = el("input", { type: "text", placeholder: "全体アナウンス", style: "flex:1;min-width:200px" });
+  const toDiscord = el("input", { type: "checkbox" });
+
+  async function sendAnnounce() {
+    const message = announceInput.value.trim();
+    if (!message) return;
+    try {
+      await post("/api/announce", { message, to_discord: toDiscord.checked });
+      announceInput.value = "";
+      toast("アナウンスを送信しました", "ok");
+      loadHistory();
+    } catch (e) { toast(e.message, "err"); }
+  }
+  announceInput.addEventListener("keydown", (ev) => { if (ev.key === "Enter") sendAnnounce(); });
+
+  root.appendChild(el("h2", { text: "アナウンス" }));
+  root.appendChild(el("div", { class: "panel" }, [
+    el("div", { class: "row" }, [
+      announceInput,
+      el("button", { class: "btn primary", text: "送信", onclick: sendAnnounce }),
+    ]),
+    el("label", { class: "row muted small", style: "margin-top:8px" },
+      [toDiscord, "Discord にも同じ内容を流す"]),
+  ]));
+
+  // サーバ操作のボタンは「サーバ設定」タブに集約している。
+  // ここに出すのは進行中シーケンスの状況だけ。
+  root.appendChild(restartBox);
+
+  root.appendChild(el("h2", { text: "アナウンス履歴" }));
+  root.appendChild(historyBox);
+
+  async function loadHistory() {
+    try {
+      const data = await api("/api/announcements?limit=30");
+      clear(historyBox);
+      historyBox.appendChild(announcementTable(data.records));
+    } catch (e) { /* ダッシュボードの主要表示は止めない */ }
+  }
+
+  function paint(s) {
+    clear(cards);
+    const m = s.metrics || {}, h = s.host || {};
+    const memCls = h.mem_percent >= 90 ? "crit" : h.mem_percent >= 80 ? "warn" : "";
+    cards.appendChild(card("状態", s.online ? "稼働中" : "応答なし", s.error || "", s.online ? "ok" : "crit"));
+    cards.appendChild(card("サーバFPS", m.serverfps !== undefined ? m.serverfps : "-",
+      m.serverframetime !== undefined ? "フレーム時間 " + m.serverframetime + "ms" : ""));
+    cards.appendChild(card("プレイヤー",
+      (m.currentplayernum !== undefined ? m.currentplayernum : "-") + " / " + (m.maxplayernum !== undefined ? m.maxplayernum : "-")));
+    cards.appendChild(card("稼働時間", fmtDuration(m.uptime)));
+    cards.appendChild(card("CPU使用率", (h.cpu_percent !== undefined ? h.cpu_percent.toFixed(1) : "-") + "%"));
+    cards.appendChild(card("メモリ使用率", (h.mem_percent !== undefined ? h.mem_percent.toFixed(1) : "-") + "%",
+      h.mem_used_mb + "MB / " + h.mem_total_mb + "MB", memCls));
+
+    clear(restartBox);
+    const r = s.restart || {};
+    if (r.in_progress) {
+      const remain = r.seconds_remaining;
+      restartBox.appendChild(el("div", { class: "row" }, [
+        el("strong", { text: r.mode_label + "シーケンス進行中" }),
+        el("span", { class: "muted", text: "(" + r.phase + ") " + r.message }),
+        remain !== null && remain !== undefined ? el("span", { text: "残り " + fmtDuration(remain) }) : null,
+        r.cancellable ? el("button", {
+          class: "btn danger", text: "キャンセル",
+          onclick: () => openModal({
+            title: r.mode_label + "をキャンセルします",
+            lead: "予告済みのプレイヤーにキャンセルを通知します。",
+            confirmLabel: "キャンセルする",
+            async onConfirm() {
+              await post("/api/restart/cancel");
+              toast(r.mode_label + "をキャンセルしました", "ok");
+              loadHistory();
+            },
+          }),
+        }) : null,
+      ]));
+      showBanner(r.mode_label + "シーケンスが進行中です: " + r.message, "warn");
+    } else {
+      restartBox.appendChild(el("div", { class: "row" }, [
+        el("span", { class: "muted", text: "直近の実行: " + (r.phase && r.phase !== "idle"
+          ? r.mode_label + " / " + r.phase + " / " + (r.message || "") : "なし") }),
+        el("button", {
+          class: "btn small", text: "サーバ操作へ",
+          onclick: () => setView("settings"),
+        }),
+      ]));
+      showBanner(s.online ? "" : "Palworld サーバに接続できません: " + (s.error || ""), "crit");
+    }
+  }
+
+  let wasInProgress = false;
+  async function tick() {
+    try {
+      const s = await api("/api/status");
+      state.status = s;
+      paint(s);
+      buildSidebar();
+      // シーケンスが終わったタイミングで履歴を取り直す
+      const now = !!(s.restart && s.restart.in_progress);
+      if (wasInProgress && !now) loadHistory();
+      wasInProgress = now;
+    } catch (e) {
+      showBanner("管理ツールへの接続に失敗しました: " + e.message, "crit");
+    }
+  }
+  tick();
+  loadHistory();
+  state.refresher = setInterval(tick, 1000);
+}
+
+// --------------------------------------------------------------------------
+// プレイヤー管理
+// --------------------------------------------------------------------------
+function renderPlayers(root) {
+  root.appendChild(el("h1", { text: "プレイヤー" }));
+  const info = el("div", { class: "muted", style: "margin-bottom:10px" });
+  const wrap = el("div", { class: "tablewrap" });
+  root.appendChild(info);
+  root.appendChild(wrap);
+
+  function act(kind, player) {
+    const label = kind === "kick" ? "キック" : "BAN";
+    const reason = el("input", { type: "text", placeholder: "例: 迷惑行為" });
+    openModal({
+      title: `${player.name} を${label}します`,
+      lead: kind === "ban"
+        ? "BAN したプレイヤーは再接続できなくなります。解除はプレイヤー一覧からは行えません。"
+        : "キックされたプレイヤーは再接続できます。",
+      danger: true,
+      confirmLabel: label + "する",
+      body: [
+        el("div", { class: "infobox" }, [
+          el("div", { text: "UserID: " + player.userId }),
+          el("div", { class: "muted small", text: "Lv" + player.level + " / Ping " + player.ping }),
+        ]),
+        el("div", { class: "field" }, [el("label", { text: "理由" }), reason]),
+      ],
+      async onConfirm() {
+        await post("/api/players/" + kind, { userid: player.userId, message: reason.value });
+        toast(`${player.name} を${label}しました`, "ok");
+        load();
+      },
+    });
+  }
+
+  async function load() {
+    let data;
+    try { data = await api("/api/players"); }
+    catch (e) { info.textContent = "取得に失敗しました: " + e.message; return; }
+
+    info.textContent = "接続中 " + data.count + " 人";
+    clear(wrap);
+    if (!data.count) {
+      wrap.appendChild(el("div", { class: "muted", style: "padding:16px", text: "接続中のプレイヤーはいません" }));
+      return;
+    }
+    const table = el("table");
+    table.appendChild(el("thead", null, el("tr", null,
+      ["名前", "Lv", "Ping", "建築数", "座標", "UserID", ""].map(h => el("th", { text: h })))));
+    const tbody = el("tbody");
+    for (const p of data.players) {
+      tbody.appendChild(el("tr", null, [
+        el("td", null, [el("div", { text: p.name }), el("div", { class: "muted small", text: p.accountName || "" })]),
+        el("td", { text: p.level }),
+        el("td", { text: p.ping, class: p.ping >= 150 ? "value warn" : "" }),
+        el("td", { text: p.building_count }),
+        el("td", { class: "muted", text: Math.round(p.location_x) + ", " + Math.round(p.location_y) }),
+        el("td", { class: "muted small", text: p.userId }),
+        el("td", null, el("div", { class: "row" }, [
+          el("button", { class: "btn", text: "キック", onclick: () => act("kick", p) }),
+          el("button", { class: "btn danger", text: "BAN", onclick: () => act("ban", p) }),
+        ])),
+      ]));
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+  }
+
+  load();
+  state.refresher = setInterval(load, 5000);
+}
+
+// --------------------------------------------------------------------------
+// ワールド（プレイヤー座標のマップ）
+// --------------------------------------------------------------------------
+function renderWorld(root) {
+  root.appendChild(el("h1", { text: "ワールド" }));
+  root.appendChild(el("div", { class: "muted", style: "margin-bottom:10px",
+    text: "REST API が座標を返すのは接続中プレイヤーのみです（パル/NPCは非公開）。" }));
+  const canvas = el("canvas", { width: 900, height: 560, style: "aspect-ratio:900/560" });
+  const alerts = el("div", { style: "margin-top:12px" });
+  root.appendChild(canvas);
+  root.appendChild(el("h2", { text: "異常検知" }));
+  root.appendChild(alerts);
+
+  const RANGE = 200000; // ワールド座標のおおよその表示範囲
+
+  function draw(points) {
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#161923"; ctx.fillRect(0, 0, w, h);
+
+    ctx.strokeStyle = "#2e3342"; ctx.lineWidth = 1;
+    for (let i = 1; i < 8; i++) {
+      ctx.beginPath(); ctx.moveTo(w * i / 8, 0); ctx.lineTo(w * i / 8, h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, h * i / 8); ctx.lineTo(w, h * i / 8); ctx.stroke();
+    }
+    const toX = (x) => (x + RANGE) / (RANGE * 2) * w;
+    const toY = (y) => h - (y + RANGE) / (RANGE * 2) * h;
+
+    for (const p of points) {
+      if (p.x === null || p.y === null) continue;
+      const cx = Math.max(8, Math.min(w - 8, toX(p.x)));
+      const cy = Math.max(8, Math.min(h - 8, toY(p.y)));
+      ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+      ctx.fillStyle = p.ping >= 150 ? "#e8a33d" : "#4da3ff"; ctx.fill();
+      ctx.fillStyle = "#e6e9f0"; ctx.font = "12px system-ui";
+      ctx.fillText(p.name + " (Lv" + p.level + ")", cx + 10, cy + 4);
+    }
+    if (!points.length) {
+      ctx.fillStyle = "#97a0b5"; ctx.font = "14px system-ui";
+      ctx.fillText("接続中のプレイヤーはいません", 20, 30);
+    }
+  }
+
+  async function load() {
+    try {
+      const data = await api("/api/world");
+      draw(data.points);
+      clear(alerts);
+      if (!data.anomalies.length) {
+        alerts.appendChild(el("div", { class: "muted", text: "異常はありません" }));
+      }
+      for (const a of data.anomalies) {
+        const label = a.type === "high_ping" ? "Pingが高い" : a.type === "many_buildings" ? "建築数が多い" : a.type;
+        alerts.appendChild(el("div", { class: "panel", style: "margin-bottom:8px" },
+          [el("strong", { text: a.name }), " — " + label + ": " + a.value]));
+      }
+    } catch (e) { toast(e.message, "err"); }
+  }
+  load();
+  state.refresher = setInterval(load, 5000);
+}
+
+// --------------------------------------------------------------------------
+// 稼働履歴
+// --------------------------------------------------------------------------
+function renderHistory(root) {
+  root.appendChild(el("h1", { text: "稼働履歴" }));
+  const select = el("select", null, [
+    el("option", { value: "60", text: "直近1時間" }),
+    el("option", { value: "360", text: "直近6時間" }),
+    el("option", { value: "1440", text: "直近24時間" }),
+  ]);
+  root.appendChild(el("div", { class: "row", style: "margin-bottom:12px" }, [
+    select,
+    el("button", { class: "btn", text: "今すぐ1点記録", onclick: async () => { await post("/api/sample"); load(); } }),
+  ]));
+
+  const charts = [
+    { key: "fps", label: "サーバFPS", color: "#4da3ff" },
+    { key: "players", label: "プレイヤー数", color: "#3bbf7d" },
+    { key: "mem_percent", label: "メモリ使用率 (%)", color: "#e8a33d" },
+  ];
+  for (const c of charts) {
+    root.appendChild(el("h2", { text: c.label }));
+    c.canvas = el("canvas", { width: 900, height: 200, style: "aspect-ratio:900/200" });
+    root.appendChild(c.canvas);
+  }
+  const empty = el("div", { class: "muted", style: "margin-top:12px" });
+  root.appendChild(empty);
+
+  function plot(canvas, records, key, color) {
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width, h = canvas.height, pad = 28;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#1a1d26"; ctx.fillRect(0, 0, w, h);
+
+    const values = records.map(r => r[key]).filter(v => typeof v === "number");
+    if (values.length < 2) {
+      ctx.fillStyle = "#97a0b5"; ctx.font = "13px system-ui";
+      ctx.fillText("データが足りません", pad, h / 2);
+      return;
+    }
+    const max = Math.max.apply(null, values) * 1.15 || 1;
+    const t0 = records[0].ts, t1 = records[records.length - 1].ts || t0 + 1;
+    const toX = (ts) => pad + (ts - t0) / Math.max(1, t1 - t0) * (w - pad * 2);
+    const toY = (v) => h - pad - (v / max) * (h - pad * 2);
+
+    ctx.strokeStyle = "#2e3342"; ctx.beginPath();
+    ctx.moveTo(pad, h - pad); ctx.lineTo(w - pad, h - pad); ctx.stroke();
+
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    let started = false;
+    for (const r of records) {
+      if (typeof r[key] !== "number") continue;
+      const x = toX(r.ts), y = toY(r[key]);
+      started ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      started = true;
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = "#97a0b5"; ctx.font = "11px system-ui";
+    ctx.fillText(max.toFixed(0), 4, pad);
+    ctx.fillText("0", 4, h - pad + 4);
+    ctx.fillText(new Date(t0 * 1000).toLocaleTimeString("ja-JP", { hour12: false }), pad, h - 8);
+    const lastLabel = new Date(t1 * 1000).toLocaleTimeString("ja-JP", { hour12: false });
+    ctx.fillText(lastLabel, w - pad - ctx.measureText(lastLabel).width, h - 8);
+  }
+
+  async function load() {
+    try {
+      const data = await api("/api/history?minutes=" + select.value);
+      empty.textContent = data.records.length
+        ? data.records.length + " 件 / 記録間隔 " + data.interval + "秒"
+        : "まだ記録がありません（監視ループが " + data.interval + " 秒ごとに記録します）";
+      for (const c of charts) plot(c.canvas, data.records, c.key, c.color);
+    } catch (e) { toast(e.message, "err"); }
+  }
+  select.addEventListener("change", load);
+  load();
+  state.refresher = setInterval(load, 30000);
+}
+
+// --------------------------------------------------------------------------
+// サーバ設定（サーバ操作 + PalWorldSettings.ini）
+// --------------------------------------------------------------------------
+function renderSettings(root) {
+  root.appendChild(el("h1", { text: "サーバ設定" }));
+
+  // --- サーバ操作（サーバに対する操作はすべてここに集約している） ---
+  const serviceInfo = el("div", { class: "muted small", style: "margin-bottom:12px" });
+  const sequenceBox = el("div", { style: "margin-top:12px" });
+  root.appendChild(el("h2", { text: "サーバ操作" }));
+  root.appendChild(el("div", { class: "panel" }, [
+    serviceInfo,
+    el("div", { class: "row" }, [
+      el("button", {
+        class: "btn primary", text: "サーバーを起動",
+        onclick: () => openStartModal(refreshSequence),
+      }),
+      el("button", {
+        class: "btn danger", text: "サーバーを再起動",
+        onclick: () => openSequenceModal("restart", refreshSequence),
+      }),
+      el("button", {
+        class: "btn danger", text: "サーバーを停止",
+        onclick: () => openSequenceModal("stop", refreshSequence),
+      }),
+      el("button", {
+        class: "btn", text: "ワールド保存",
+        onclick: () => openModal({
+          title: "ワールドを保存します",
+          lead: "サーバに保存を指示します。プレイヤーへの影響はありません。",
+          confirmLabel: "保存する",
+          async onConfirm() { await post("/api/save"); toast("ワールドを保存しました", "ok"); },
+        }),
+      }),
+    ]),
+    el("div", { class: "muted small", style: "margin-top:10px" },
+      "再起動と停止は、予告アナウンス → ワールド保存 → 停止 の順に実行します。保存に失敗した場合は中止します。"),
+    sequenceBox,
+  ]));
+
+  // 進行中のシーケンスをこのタブでも操作できるようにする
+  async function refreshSequence() {
+    let r;
+    try { r = await api("/api/restart"); }
+    catch (e) { return; }
+    clear(sequenceBox);
+    if (!r.in_progress) return;
+    sequenceBox.appendChild(el("div", { class: "warnbox row" }, [
+      el("strong", { text: r.mode_label + "シーケンス進行中" }),
+      el("span", { text: "(" + r.phase + ") " + r.message }),
+      r.seconds_remaining !== null && r.seconds_remaining !== undefined
+        ? el("span", { text: "残り " + fmtDuration(r.seconds_remaining) }) : null,
+      r.cancellable ? el("button", {
+        class: "btn danger", text: "キャンセル",
+        onclick: () => openModal({
+          title: r.mode_label + "をキャンセルします",
+          lead: "予告済みのプレイヤーにキャンセルを通知します。",
+          confirmLabel: "キャンセルする",
+          async onConfirm() {
+            await post("/api/restart/cancel");
+            toast(r.mode_label + "をキャンセルしました", "ok");
+            refreshSequence();
+          },
+        }),
+      }) : null,
+    ]));
+  }
+
+  // --- ini 編集 ---
+  const pathInfo = el("div", { class: "muted", style: "margin-bottom:10px" });
+  const area = el("textarea", { spellcheck: "false" });
+  const backups = el("div");
+  root.appendChild(el("h2", { text: "PalWorldSettings.ini" }));
+  root.appendChild(pathInfo);
+  root.appendChild(area);
+  root.appendChild(el("div", { class: "row", style: "margin-top:10px" }, [
+    el("button", {
+      class: "btn primary", text: "保存",
+      onclick: () => openModal({
+        title: "設定ファイルを上書きします",
+        lead: "上書き前に自動でバックアップを取ります。変更の反映にはサーバの再起動が必要です。",
+        danger: true,
+        confirmLabel: "上書き保存する",
+        body: [el("div", { class: "warnbox",
+          text: "内容が壊れているとサーバが起動しなくなります。OptionSettings 行の形式を確認してください。" })],
+        async onConfirm() {
+          const r = await put("/api/settings-ini", { text: area.value });
+          toast("保存しました（バックアップ: " + r.backup + "）", "ok");
+          load();
+        },
+      }),
+    }),
+    el("button", { class: "btn", text: "読み直す", onclick: () => load() }),
+  ]));
+  root.appendChild(el("h2", { text: "バックアップ" }));
+  root.appendChild(backups);
+
+  async function load() {
+    if (state.config) {
+      serviceInfo.textContent = "systemd ユニット: " + state.config.pal_service_name;
+    }
+    let data;
+    try { data = await api("/api/settings-ini"); }
+    catch (e) { pathInfo.textContent = "読み込みに失敗しました: " + e.message; return; }
+
+    pathInfo.textContent = data.exists ? data.path : "設定ファイルが見つかりません: " + data.path;
+    area.value = data.text || "";
+    area.disabled = !data.exists;
+
+    clear(backups);
+    if (!data.backups.length) {
+      backups.appendChild(el("div", { class: "muted", text: "バックアップはまだありません" }));
+      return;
+    }
+    const wrap = el("div", { class: "tablewrap" });
+    const table = el("table");
+    table.appendChild(el("thead", null, el("tr", null,
+      ["ファイル名", "作成日時", "サイズ", ""].map(h => el("th", { text: h })))));
+    const tbody = el("tbody");
+    for (const b of data.backups) {
+      tbody.appendChild(el("tr", null, [
+        el("td", { text: b.name }),
+        el("td", { text: fmtTime(b.created_at) }),
+        el("td", { text: b.size + " B" }),
+        el("td", null, el("button", {
+          class: "btn", text: "この内容に戻す",
+          onclick: () => openModal({
+            title: "バックアップから復元します",
+            lead: b.name + " の内容で上書きします。復元前の状態も自動でバックアップされます。",
+            danger: true,
+            confirmLabel: "復元する",
+            async onConfirm() {
+              await post("/api/settings-ini/restore", { name: b.name });
+              toast("復元しました", "ok");
+              load();
+            },
+          }),
+        })),
+      ]));
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    backups.appendChild(wrap);
+  }
+  load();
+  refreshSequence();
+  // 進行中シーケンスの残り時間を追いたいので、この画面も定期更新する
+  state.refresher = setInterval(refreshSequence, 1000);
+}
+
+// --------------------------------------------------------------------------
+// 再起動予約
+// --------------------------------------------------------------------------
+const CRON_PRESETS = [
+  { value: "0 4 * * *", label: "毎日 4:00" },
+  { value: "0 5 * * 1", label: "毎週月曜 5:00" },
+  { value: "0 */6 * * *", label: "6時間ごと" },
+  { value: "0 4 1 * *", label: "毎月1日 4:00" },
+  { value: "", label: "カスタム（自分で書く）" },
+];
+
+// ローカル時刻を YYYY-MM-DD で返す（toISOString は UTC になってしまう）
+function localDateString(d) {
+  return d.getFullYear() + "-" +
+    String(d.getMonth() + 1).padStart(2, "0") + "-" +
+    String(d.getDate()).padStart(2, "0");
+}
+
+// 種別に応じた時刻入力を作る。値は spec 文字列として取り出す。
+// initialSpec を渡すと既存の値で初期化する（編集時）。
+function specPicker(initialKind, initialSpec, onKindChange) {
+  const kind = el("select", null, [
+    el("option", { value: "daily", text: "毎日" }),
+    el("option", { value: "once", text: "単発（日時指定）" }),
+    el("option", { value: "cron", text: "cron式" }),
+  ]);
+  kind.value = initialKind || "daily";
+
+  // 毎日: 時・分のプルダウン
+  const hour = el("select", null,
+    Array.from({ length: 24 }, (_, i) => el("option", { value: String(i), text: String(i).padStart(2, "0") + "時" })));
+  const minute = el("select", null,
+    Array.from({ length: 12 }, (_, i) => el("option", { value: String(i * 5), text: String(i * 5).padStart(2, "0") + "分" })));
+  hour.value = "4";
+  minute.value = "0";
+  const dailyBox = el("div", { class: "row" }, [hour, minute]);
+
+  // 単発: カレンダー + 時刻
+  const date = el("input", { type: "date" });
+  const time = el("input", { type: "time", value: "04:00" });
+  date.value = localDateString(new Date(Date.now() + 86400000));
+  date.min = localDateString(new Date());
+  const onceBox = el("div", { class: "row" }, [date, time]);
+
+  // cron: プリセット + カスタム入力
+  const cronPreset = el("select", null,
+    CRON_PRESETS.map(p => el("option", { value: p.value, text: p.label })));
+  const cronCustom = el("input", { type: "text", placeholder: "分 時 日 月 曜（例: 0 4 * * *）" });
+  const cronBox = el("div", null, [cronPreset, el("div", { style: "margin-top:8px" }, cronCustom)]);
+  function syncCron() {
+    const custom = cronPreset.value === "";
+    cronCustom.style.display = custom ? "" : "none";
+    if (!custom) cronCustom.value = cronPreset.value;
+  }
+  cronPreset.addEventListener("change", syncCron);
+  syncCron();
+
+  // --- 編集時は既存の値を戻す ---
+  if (initialSpec) {
+    if (kind.value === "daily") {
+      const [h, m] = initialSpec.split(":");
+      hour.value = String(Number(h));
+      // 5分刻みに無い値（例 04:07）でも選べるように選択肢を足す
+      if (!Array.from(minute.options).some(o => o.value === String(Number(m)))) {
+        minute.appendChild(el("option", { value: String(Number(m)), text: m + "分" }));
+      }
+      minute.value = String(Number(m));
+    } else if (kind.value === "once") {
+      const [d, t] = initialSpec.split("T");
+      if (d) { date.value = d; if (d < date.min) date.min = d; }
+      if (t) time.value = t.slice(0, 5);
+    } else {
+      const preset = CRON_PRESETS.find(p => p.value === initialSpec);
+      cronPreset.value = preset ? preset.value : "";
+      syncCron();
+      cronCustom.value = initialSpec;
+    }
+  }
+
+  const boxes = { daily: dailyBox, once: onceBox, cron: cronBox };
+  const holder = el("div");
+  function syncKind() {
+    clear(holder);
+    holder.appendChild(boxes[kind.value]);
+    if (onKindChange) onKindChange(kind.value);
+  }
+  kind.addEventListener("change", syncKind);
+  syncKind();
+
+  return {
+    kindNode: kind,
+    specNode: holder,
+    get kind() { return kind.value; },
+    spec() {
+      if (kind.value === "daily") {
+        return String(hour.value).padStart(2, "0") + ":" + String(minute.value).padStart(2, "0");
+      }
+      if (kind.value === "once") {
+        if (!date.value || !time.value) return "";
+        return date.value + "T" + time.value + ":00";
+      }
+      return cronCustom.value.trim();
+    },
+    validate() {
+      const spec = this.spec();
+      if (!spec) return "日時を入力してください";
+      if (kind.value === "once" && new Date(spec) <= new Date()) return "未来の日時を指定してください";
+      if (kind.value === "cron" && spec.split(/\s+/).length !== 5) {
+        return "cron 式は「分 時 日 月 曜」の5項目です";
+      }
+      return null;
+    },
+  };
+}
+
+function renderSchedules(root) {
+  root.appendChild(el("h1", { text: "再起動予約" }));
+  const tzInfo = el("div", { class: "muted", style: "margin-bottom:12px" });
+  root.appendChild(tzInfo);
+
+  root.appendChild(el("div", { class: "row", style: "margin-bottom:16px" }, [
+    el("button", { class: "btn primary", text: "＋ 予約を追加", onclick: () => openScheduleModal(null, load) }),
+  ]));
+
+  const list = el("div");
+  root.appendChild(list);
+
+  function openScheduleModal(existing, onDone) {
+    // 種別を切り替えたら注意書きも切り替える
+    const specHint = el("div", { class: "muted small" });
+    function updateHint(kind) {
+      specHint.textContent = kind === "cron"
+        ? "cron はその時刻から予告が始まるため、実際の再起動は予告リードぶん後になります。"
+        : "指定時刻ちょうどに再起動されるよう、予告はその手前から始まります。";
+    }
+    const picker = specPicker(existing && existing.kind, existing && existing.spec, updateHint);
+    const label = el("input", { type: "text", placeholder: "メモ（任意）", value: (existing && existing.label) || "" });
+    const fields = announceFields({
+      message: (existing && existing.announce_message)
+        || (state.config && state.config.restart_announce_template) || "",
+      offsets: (existing && existing.notice_offsets)
+        || (state.config && state.config.notice_offsets) || [300, 60, 30],
+    });
+
+    openModal({
+      title: existing ? "予約を編集します" : "再起動予約を追加します",
+      lead: "指定した時刻に再起動します。予告アナウンスは、その手前から順に流れます。",
+      confirmLabel: existing ? "更新する" : "追加する",
+      body: [
+        field("繰り返し方", picker.kindNode),
+        el("div", { class: "field" }, [
+          el("label", { text: "日時" }), picker.specNode, specHint,
+        ]),
+        field("メモ", label),
+      ].concat(fields.nodes),
+      validate() {
+        return picker.validate() || fields.validate();
+      },
+      async onConfirm() {
+        const payload = Object.assign(
+          { kind: picker.kind, spec: picker.spec(), label: label.value.trim() },
+          fields.payload()
+        );
+        if (existing) await patch("/api/schedules/" + existing.id, payload);
+        else await post("/api/schedules", payload);
+        toast(existing ? "予約を更新しました" : "予約を追加しました", "ok");
+        if (onDone) onDone();
+      },
+    });
+  }
+
+  async function load() {
+    let data;
+    try { data = await api("/api/schedules"); }
+    catch (e) { toast(e.message, "err"); return; }
+    tzInfo.textContent = "タイムゾーン: " + data.timezone;
+    clear(list);
+    if (!data.schedules.length) {
+      list.appendChild(el("div", { class: "panel muted", text: "予約はありません" }));
+      return;
+    }
+    const wrap = el("div", { class: "tablewrap" });
+    const table = el("table");
+    table.appendChild(el("thead", null, el("tr", null,
+      ["種別", "指定", "メモ", "予告", "次回再起動", "状態", ""].map(h => el("th", { text: h })))));
+    const tbody = el("tbody");
+    for (const s of data.schedules) {
+      const offsets = s.notice_offsets && s.notice_offsets.length
+        ? s.notice_offsets.map(offsetLabel).join(" / ") : "既定";
+      tbody.appendChild(el("tr", null, [
+        el("td", { text: { daily: "毎日", once: "単発", cron: "cron" }[s.kind] || s.kind }),
+        el("td", { text: s.spec }),
+        el("td", { text: s.label || "-" }),
+        el("td", null, [
+          el("div", { class: "small", text: offsets }),
+          el("div", { class: "muted small", text: s.announce_message || "既定の文面" }),
+        ]),
+        el("td", { text: fmtTime(s.next_restart_at) }),
+        el("td", { text: s.enabled ? "有効" : "無効", class: s.enabled ? "" : "muted" }),
+        el("td", null, el("div", { class: "row" }, [
+          el("button", { class: "btn", text: "編集", onclick: () => openScheduleModal(s, load) }),
+          el("button", {
+            class: "btn", text: s.enabled ? "無効化" : "有効化",
+            onclick: async () => {
+              try { await patch("/api/schedules/" + s.id, { enabled: !s.enabled }); load(); }
+              catch (e) { toast(e.message, "err"); }
+            }
+          }),
+          el("button", {
+            class: "btn danger", text: "削除",
+            onclick: () => openModal({
+              title: "予約を削除します",
+              lead: (s.label || s.spec) + " の予約を削除します。",
+              danger: true,
+              confirmLabel: "削除する",
+              async onConfirm() { await del("/api/schedules/" + s.id); toast("削除しました", "ok"); load(); },
+            }),
+          }),
+        ])),
+      ]));
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    list.appendChild(wrap);
+  }
+  load();
+  state.refresher = setInterval(load, 15000);
+}
+
+// --------------------------------------------------------------------------
+// ログ（WebSocket ストリーミング）
+// --------------------------------------------------------------------------
+function renderLogs(root) {
+  root.appendChild(el("h1", { text: "ログ" }));
+  const status = el("span", { class: "muted", text: "接続中…" });
+  const autoscroll = el("input", { type: "checkbox" });
+  autoscroll.checked = true;
+  root.appendChild(el("div", { class: "row", style: "margin-bottom:10px" }, [
+    status,
+    el("label", { class: "row" }, [autoscroll, "自動スクロール"]),
+    el("button", { class: "btn", text: "クリア", onclick: () => clear(box) }),
+  ]));
+  const box = el("div", { id: "log" });
+  root.appendChild(box);
+
+  function append(record) {
+    const time = new Date(record.ts * 1000).toLocaleTimeString("ja-JP", { hour12: false });
+    box.appendChild(el("div", { class: record.source }, "[" + time + "] " + record.line));
+    while (box.childElementCount > 2000) box.removeChild(box.firstChild);
+    if (autoscroll.checked) box.scrollTop = box.scrollHeight;
+  }
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(proto + "//" + location.host + "/ws/logs");
+  state.ws = ws;
+  ws.onopen = () => { status.textContent = "接続済み"; };
+  ws.onmessage = (ev) => { try { append(JSON.parse(ev.data)); } catch (e) { /* 無視 */ } };
+  ws.onclose = () => { status.textContent = "切断されました（画面を切り替えると再接続します）"; };
+  ws.onerror = () => { status.textContent = "接続エラー"; };
+}
+
+// --------------------------------------------------------------------------
+// ドロワー（スマホ）
+// --------------------------------------------------------------------------
+function openDrawer() { $("sidebar").classList.add("open"); $("backdrop").classList.add("show"); }
+function closeDrawer() { $("sidebar").classList.remove("open"); $("backdrop").classList.remove("show"); }
+$("hamburger").addEventListener("click", openDrawer);
+$("backdrop").addEventListener("click", closeDrawer);
+
+// --------------------------------------------------------------------------
+// 起動
+// --------------------------------------------------------------------------
+(async function main() {
+  try { state.config = await api("/api/config"); }
+  catch (e) { toast("設定の取得に失敗しました: " + e.message, "err"); }
+  setView("dashboard");
+})();
+</script>
+</body>
+</html>
