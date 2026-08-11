@@ -90,6 +90,25 @@ class Schedule:
         return data
 
 
+def describe_spec(kind: str, spec: str) -> str:
+    """予約の指定を人が読める形にする。
+
+    メモを付けていない予約は spec がそのまま名前になるので、
+    once の ISO 文字列が「2026-08-12T01:00:00」のまま通知に出てしまう。
+    """
+    if kind == "daily":
+        return f"毎日 {spec}"
+    if kind == "cron":
+        return f"cron {spec}"
+    if kind == "once":
+        try:
+            when = datetime.fromisoformat(spec)
+        except ValueError:
+            return spec
+        return when.strftime("%Y-%m-%d %H:%M")
+    return spec
+
+
 def _validate(kind: str, spec: str, tz: ZoneInfo) -> None:
     if kind == "daily":
         try:
@@ -231,8 +250,8 @@ class ServerScheduler:
         sched = self._schedules.get(schedule_id)
         if sched is None:  # pragma: no cover - 削除と発火が競合した場合
             return
-        label = sched.label or sched.spec
-        reason = f"スケジュール({label})"
+        label = sched.label or describe_spec(sched.kind, sched.spec)
+        reason = f"予約: {label}"
 
         if sched.action == "start":
             # 停止中のサーバにはアナウンスを送れないので、そのまま起動する

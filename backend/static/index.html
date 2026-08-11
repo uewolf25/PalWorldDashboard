@@ -1142,19 +1142,37 @@ function renderGameSettings(root) {
     return String(value);
   }
 
-  function setEdit(name, value) {
+  /** 値を取り込む。
+   *
+   *  live=true（入力中）のときは一覧を作り直さない。作り直すと入力中の
+   *  要素ごと破棄され、1文字打つたびにフォーカスが外れて続きが打てなくなる。
+   *  そのカードの見た目と保存バーだけを更新する。
+   */
+  function setEdit(name, value, live) {
     const spec = specs.get(name);
     if (spec && spec.spec.locked) return;   // 念のため二重で止める
+
     // 新規追加した項目は、元の値が無いので常に「変更あり」として持つ
-    if (customs.has(name)) { customs.get(name).value = value; paint(); return; }
-    if (additions.has(name)) { additions.set(name, value); paint(); return; }
-    const entry = specs.get(name);
-    // 数値は型を揃えてから比較する（"1.0" と 1 を別物にしない）
-    const same = entry.spec.type === "int" || entry.spec.type === "float"
-      ? Number(value) === Number(entry.original)
-      : value === entry.original;
-    if (same) edits.delete(name); else edits.set(name, value);
-    paint();
+    if (customs.has(name)) {
+      customs.get(name).value = value;
+    } else if (additions.has(name)) {
+      additions.set(name, value);
+    } else {
+      const entry = specs.get(name);
+      if (!entry) return;
+      // 数値は型を揃えてから比較する（"1.0" と 1 を別物にしない）
+      const same = entry.spec.type === "int" || entry.spec.type === "float"
+        ? Number(value) === Number(entry.original)
+        : value === entry.original;
+      if (same) edits.delete(name); else edits.set(name, value);
+    }
+
+    if (live) {
+      refreshCard(name);
+      paintSavebar();
+    } else {
+      paint();
+    }
   }
 
   function addField(f) {
@@ -1246,7 +1264,7 @@ function renderGameSettings(root) {
         el("option", { value: "false", text: "無効" }),
       ]);
       sel.value = current ? "true" : "false";
-      sel.addEventListener("change", () => setEdit(f.name, sel.value === "true"));
+      sel.addEventListener("change", () => setEdit(f.name, sel.value === "true", true));
       return sel;
     }
 
@@ -1258,7 +1276,7 @@ function renderGameSettings(root) {
         sel.appendChild(el("option", { value: String(current), text: String(current) + "（現在値）" }));
       }
       sel.value = String(current);
-      sel.addEventListener("change", () => setEdit(f.name, sel.value));
+      sel.addEventListener("change", () => setEdit(f.name, sel.value, true));
       return sel;
     }
 
@@ -1268,15 +1286,18 @@ function renderGameSettings(root) {
       if (f.max !== null && f.max !== undefined) input.max = String(f.max);
       input.step = String(f.step || (f.type === "int" ? 1 : 0.1));
       input.addEventListener("input", () => {
-        if (input.value === "") return;  // 入力途中は反映しない
-        setEdit(f.name, f.type === "int" ? parseInt(input.value, 10) : parseFloat(input.value));
+        // 空欄や "1." のような入力途中は数値にできないので、まだ取り込まない。
+        // 画面は作り直さないので、打ちかけの文字はそのまま残る
+        const n = f.type === "int" ? parseInt(input.value, 10) : parseFloat(input.value);
+        if (!Number.isFinite(n)) return;
+        setEdit(f.name, n, true);
       });
       return input;
     }
 
     // 文字列（パスワードは伏せて、ボタンで表示切替）
     const input = el("input", { type: f.secret ? "password" : "text", value: String(current) });
-    input.addEventListener("input", () => setEdit(f.name, input.value));
+    input.addEventListener("input", () => setEdit(f.name, input.value, true));
     if (!f.secret) return input;
     const toggle = el("button", {
       class: "btn", text: "表示",
@@ -1301,42 +1322,87 @@ function renderGameSettings(root) {
       text: `推奨範囲（${f.min}〜${f.max}）を${low ? "下回っています" : "超えています"}。保存はできます。` });
   }
 
-  function buildCard(f) {
+  // 入力中の要素を作り直すとフォーカスもカーソル位置も失われ、
+  // 1文字打つたびに入力できなくなる。そこでカードを
+  //   ・操作部（input / select）  … 一度作ったら触らない
+  //   ・装飾部（バッジ・注記）    … 値が変わるたびに詰め替える
+  // に分け、装飾部だけを更新できるようにしておく。
+  const cards = new Map();   // name -> { card, badges, notes, field }
+
+  function badgeNodes(f) {
     const isNew = additions.has(f.name) || customs.has(f.name);
     const changed = isChanged(f.name);
-    return el("div", { class: "setting" + (changed ? " changed" : "") }, [
-      el("div", { class: "head" }, [
-        el("div", null, [
-          el("div", { class: "title", text: f.label }),
-          el("div", { class: "name", text: f.name }),
-        ]),
-        el("div", { class: "row" }, [
-          f.locked ? el("span", { class: "tag-locked", text: "変更不可" }) : null,
-          !f.known ? el("span", { class: "tag-unknown", text: "未知" }) : null,
-          isNew ? el("span", { class: "tag-added", text: "新規追加" })
-                : (changed ? el("span", { class: "tag-changed", text: "変更" }) : null),
-        ]),
-      ]),
-      buildControl(f),
-      // 難易度を None 以外にすると個別の倍率設定が無視される（公式仕様）
-      f.overrides_others && String(currentValue(f)) !== "None"
-        ? el("div", { class: "warnbox small", style: "margin-top:2px",
-            text: "この設定が有効な間、経験値倍率や捕獲率などの個別設定は無視されます。"
-                + "個別に調整したい場合は None を選んでください。" })
-        : null,
-      // 推奨範囲はこちらで決めた目安。外れていても保存はできる
-      rangeNote(f),
-      isNew ? el("div", { class: "row small" }, [
+    return [
+      f.locked ? el("span", { class: "tag-locked", text: "変更不可" }) : null,
+      !f.known ? el("span", { class: "tag-unknown", text: "未知" }) : null,
+      isNew ? el("span", { class: "tag-added", text: "新規追加" })
+            : (changed ? el("span", { class: "tag-changed", text: "変更" }) : null),
+    ].filter(Boolean);
+  }
+
+  function noteNodes(f) {
+    const isNew = additions.has(f.name) || customs.has(f.name);
+    const changed = isChanged(f.name);
+    const nodes = [];
+
+    // 難易度を None 以外にすると個別の倍率設定が無視される（公式仕様）
+    if (f.overrides_others && String(currentValue(f)) !== "None") {
+      nodes.push(el("div", { class: "warnbox small", style: "margin-top:2px",
+        text: "この設定が有効な間、経験値倍率や捕獲率などの個別設定は無視されます。"
+            + "個別に調整したい場合は None を選んでください。" }));
+    }
+    // 推奨範囲はこちらで決めた目安。外れていても保存はできる
+    const range = rangeNote(f);
+    if (range) nodes.push(range);
+
+    if (isNew) {
+      nodes.push(el("div", { class: "row small" }, [
         el("span", { class: "muted", text: "設定ファイルに新しく書き足します" }),
         el("button", { class: "btn small", text: "やめる", onclick: () => removeAddition(f.name) }),
-      ]) : changed ? el("div", { class: "row small" }, [
+      ]));
+    } else if (changed) {
+      nodes.push(el("div", { class: "row small" }, [
         el("span", { class: "muted", text: "元: " + displayValue(f, specs.get(f.name).original) }),
         el("button", {
           class: "btn small", text: "戻す",
           onclick: () => { edits.delete(f.name); paint(); },
         }),
-      ]) : (f.help ? el("div", { class: "help", text: f.help }) : null),
+      ]));
+    } else if (f.help) {
+      nodes.push(el("div", { class: "help", text: f.help }));
+    }
+    return nodes;
+  }
+
+  function buildCard(f) {
+    const badges = el("div", { class: "row" }, badgeNodes(f));
+    const notes = el("div", { class: "notes" }, noteNodes(f));
+    const card = el("div", { class: "setting" + (isChanged(f.name) ? " changed" : "") }, [
+      el("div", { class: "head" }, [
+        el("div", null, [
+          el("div", { class: "title", text: f.label }),
+          el("div", { class: "name", text: f.name }),
+        ]),
+        badges,
+      ]),
+      buildControl(f),
+      notes,
     ]);
+    cards.set(f.name, { card, badges, notes, field: f });
+    return card;
+  }
+
+  /** 操作部はそのままに、バッジと注記だけ差し替える。
+   *  入力中に呼んでもフォーカスとカーソル位置が保たれる。 */
+  function refreshCard(name) {
+    const entry = cards.get(name);
+    if (!entry) return;
+    const { card, badges, notes, field } = entry;
+    card.classList.toggle("changed", isChanged(name));
+    clear(badges);
+    for (const n of badgeNodes(field)) badges.appendChild(n);
+    clear(notes);
+    for (const n of noteNodes(field)) notes.appendChild(n);
   }
 
   // 設定ファイルに書かれていない項目のカード（追加ボタン付き）
@@ -1440,6 +1506,7 @@ function renderGameSettings(root) {
   function paint() {
     paintCatbar();
     clear(grid);
+    cards.clear();   // 作り直すので古い参照は捨てる
     const fields = visibleFields();
     if (!fields.length) {
       grid.appendChild(el("div", { class: "panel muted", text: "該当する項目がありません" }));
@@ -1756,6 +1823,27 @@ function renderGameSettings(root) {
 
   search.addEventListener("input", paint);
   onlyChanged.addEventListener("change", paint);
+
+  // ブラウザを使わずに入力の挙動を検証するための入口。
+  // load() は fetch を使うので、テストからは状態を直接入れて描画させる
+  globalThis.setFormStateForTest = (data) => {
+    categories = data.categories || [];
+    available = data.available || [];
+    discovered = data.discovered || [];
+    serverRunning = !!data.server_running;
+    specs.clear();
+    availableByName.clear();
+    for (const cat of categories) {
+      for (const f of cat.fields) specs.set(f.name, { spec: f, original: f.value });
+    }
+    for (const cat of available) {
+      for (const f of cat.fields) availableByName.set(f.name, f);
+    }
+    for (const f of discovered) availableByName.set(f.name, f);
+    paint();
+  };
+  globalThis.getEditsForTest = () => Object.fromEntries(edits);
+
   load();
 }
 

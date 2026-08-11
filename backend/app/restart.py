@@ -266,10 +266,22 @@ class RestartManager:
         label = MODE_LABELS.get(mode, mode)
         async with self._lock:
             try:
-                # 開始を Discord に1度だけ知らせる
+                # 予告の開始を Discord に1度だけ知らせる。
+                # この時点ではまだ実行していないので、「開始します」と書くと
+                # 受け取った側は今まさに落ちると受け取ってしまう。
+                # いつ実行されるのかを主語にする
+                lead = offsets[0]
+                pending_count = (
+                    self._count_pending(schedule_id) if self._count_pending else 0
+                )
+                detail = f"理由: {reason}"
+                if pending_count:
+                    detail += f"\nこのタイミングで設定変更 {pending_count} 件を反映します。"
+                detail += f"\n実行までキャンセルできます。"
                 await self._announcer.discord_only(
-                    f"サーバー{label}を開始します",
-                    f"{humanize(offsets[0])}後に{label}します。\n理由: {reason}",
+                    f"【予告】{humanize(lead)}後にサーバーを{label}します"
+                    if lead else f"サーバーを{label}します",
+                    detail,
                     source=mode,
                     reason=reason,
                 )
