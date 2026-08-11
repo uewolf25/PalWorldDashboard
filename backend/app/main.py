@@ -30,6 +30,7 @@ from .restart import (
 from .scheduler import RestartScheduler, ScheduleError
 from .services import SystemdService
 from .settings_ini import SettingsIniError, SettingsIniStore
+from .settings_schema import CATEGORIES, build_updates, describe
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,12 @@ class SettingsIniBody(BaseModel):
 
 class RestoreBody(BaseModel):
     name: str
+
+
+class SettingsFieldsBody(BaseModel):
+    """フォームから来た項目単位の値。ini への書式化はサーバ側で行う。"""
+
+    values: dict[str, Any] = Field(min_length=1)
 
 
 class ScheduleBody(BaseModel):
@@ -479,6 +486,64 @@ def create_app(
             "info",
         )
         return {"result": "ok", "backup": backup.name, "restart_required": True}
+
+    @app.get("/api/settings-ini/fields", dependencies=auth)
+    async def get_ini_fields() -> dict[str, Any]:
+        """ini を項目ごとのフォーム定義として返す。
+
+        返すのは実際にファイルへ書かれているキーだけ。
+        スキーマに無い項目も値から型を推論して編集できるようにする。
+        """
+        if not ini_store.exists():
+            return {
+                "exists": False,
+                "path": str(cfg.pal_settings_ini),
+                "categories": [],
+                "category_labels": [{"key": k, "label": v} for k, v in CATEGORIES],
+            }
+        options = ini_store.read_options()
+        return {
+            "exists": True,
+            "path": str(cfg.pal_settings_ini),
+            "categories": describe(options),
+            "category_labels": [{"key": k, "label": v} for k, v in CATEGORIES],
+        }
+
+    @app.put("/api/settings-ini/fields", dependencies=auth)
+    async def put_ini_fields(body: SettingsFieldsBody) -> dict[str, Any]:
+        """変更した項目だけを受け取って ini に反映する。"""
+        if not ini_store.exists():
+            raise HTTPException(404, f"設定ファイルが見つかりません: {cfg.pal_settings_ini}")
+
+        options = ini_store.read_options()
+        updates, errors = build_updates(body.values, options)
+        if errors:
+            raise HTTPException(400, " / ".join(errors))
+        if not updates:
+            raise HTTPException(400, "更新する項目がありません")
+
+        # 値が変わっていないものは書かない（無駄なバックアップを増やさない）
+        changed = {k: v for k, v in updates.items() if options.get(k) != v}
+        if not changed:
+            return {"result": "unchanged", "changed": {}, "restart_required": False}
+
+        try:
+            backup = ini_store.update_options(changed)
+        except SettingsIniError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        await notify.send(
+            "サーバ設定を更新しました",
+            "変更: " + ", ".join(f"{k}={v}" for k, v in changed.items())
+            + f"\nバックアップ: {backup.name}\n反映にはサーバの再起動が必要です。",
+            "info",
+        )
+        return {
+            "result": "ok",
+            "backup": backup.name,
+            "changed": changed,
+            "restart_required": True,
+        }
 
     @app.post("/api/settings-ini/restore", dependencies=auth)
     async def restore_ini(body: RestoreBody) -> dict[str, Any]:

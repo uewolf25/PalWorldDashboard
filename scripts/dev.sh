@@ -18,11 +18,13 @@ fi
 
 mkdir -p "$DEV/backups"
 
-# 設定ファイル編集画面を試せるよう、開発用の ini を用意する
+# 設定ファイル編集画面を試せるよう、開発用の ini を用意する。
+# 項目数が実機に近くないとフォーム UI の確認にならないので、
+# 公式の既定値をひととおり並べてある。
 if [ ! -f "$DEV/PalWorldSettings.ini" ]; then
   cat > "$DEV/PalWorldSettings.ini" <<'INI'
 [/Script/Pal.PalGameWorldSettings]
-OptionSettings=(Difficulty=None,DayTimeSpeedRate=1.000000,NightTimeSpeedRate=1.000000,ExpRate=1.000000,PalCaptureRate=1.000000,PalSpawnNumRate=1.000000,ServerPlayerMaxNum=32,ServerName="Dev Palworld Server",ServerDescription="",AdminPassword="mockpass",PublicPort=8211,RESTAPIEnabled=True,RESTAPIPort=8212)
+OptionSettings=(Difficulty=None,DayTimeSpeedRate=1.000000,NightTimeSpeedRate=1.000000,ExpRate=1.000000,PalCaptureRate=1.000000,PalSpawnNumRate=1.000000,PalDamageRateAttack=1.000000,PalDamageRateDefense=1.000000,PlayerDamageRateAttack=1.000000,PlayerDamageRateDefense=1.000000,PlayerStomachDecreaceRate=1.000000,PlayerStaminaDecreaceRate=1.000000,PlayerAutoHPRegeneRate=1.000000,PlayerAutoHpRegeneRateInSleep=1.000000,PalStomachDecreaceRate=1.000000,PalStaminaDecreaceRate=1.000000,PalAutoHPRegeneRate=1.000000,PalAutoHpRegeneRateInSleep=1.000000,BuildObjectDamageRate=1.000000,BuildObjectDeteriorationDamageRate=1.000000,CollectionDropRate=1.000000,CollectionObjectHpRate=1.000000,CollectionObjectRespawnSpeedRate=1.000000,EnemyDropItemRate=1.000000,DeathPenalty=All,bEnablePlayerToPlayerDamage=False,bEnableFriendlyFire=False,bEnableInvaderEnemy=True,bActiveUNKO=False,bEnableAimAssistPad=True,bEnableAimAssistKeyboard=False,DropItemMaxNum=3000,DropItemMaxNum_UNKO=100,BaseCampMaxNum=128,BaseCampWorkerMaxNum=15,DropItemAliveMaxHours=1.000000,bAutoResetGuildNoOnlinePlayers=False,AutoResetGuildTimeNoOnlinePlayers=72.000000,GuildPlayerMaxNum=20,PalEggDefaultHatchingTime=72.000000,WorkSpeedRate=1.000000,bIsMultiplay=False,bIsPvP=False,bCanPickupOtherGuildDeathPenaltyDrop=False,bEnableNonLoginPenalty=True,bEnableFastTravel=True,bIsStartLocationSelectByMap=True,bExistPlayerAfterLogout=False,bEnableDefenseOtherGuildPlayer=False,CoopPlayerMaxNum=4,ServerPlayerMaxNum=32,ServerName="Dev Palworld Server",ServerDescription="",AdminPassword="mockpass",ServerPassword="",PublicPort=8211,PublicIP="",RCONEnabled=False,RCONPort=25575,Region="",bUseAuth=True,BanListURL="https://api.palworldgame.com/api/banlist.txt",RESTAPIEnabled=True,RESTAPIPort=8212,bShowPlayerList=False,ChatPostLimitPerMinute=10,AllowConnectPlatform=Steam,bIsUseBackupSaveData=True,LogFormatType=Text,SupplyDropSpan=180,EnablePredatorBossPal=True,MaxBuildingLimitNum=0,ServerReplicatePawnCullDistance=15000.000000,bAllowGlobalPalboxExport=True,bAllowGlobalPalboxImport=False,bInvisibleOtherGuildBaseCampAreaFX=False,bBuildAreaLimit=False,ItemWeightRate=1.000000,RandomizerType=None,RandomizerSeed="",bIsRandomizerPalLevelRandom=False)
 INI
 fi
 
@@ -47,6 +49,16 @@ export RESTART_DEBOUNCE_SEC=5
 export MONITOR_INTERVAL=5
 # journald は無いのでアプリ自身のログだけ流す
 export LOG_SOURCE=none
+
+# 実 Webhook などの秘密情報はここに置く（.dev/ は .gitignore 済み）。
+# リポジトリに追跡させないため、*.env.example には絶対に書かないこと。
+if [ -f "$DEV/local.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$DEV/local.env"
+  set +a
+  echo "  $DEV/local.env を読み込みました"
+fi
 
 cd "$ROOT"
 "$VENV/bin/uvicorn" mock.mock_palworld:app --host 127.0.0.1 --port 8212 --log-level warning &

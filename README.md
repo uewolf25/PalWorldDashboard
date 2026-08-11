@@ -17,7 +17,8 @@ UI も API も一通り動作確認できる。
 | プレイヤー | 接続中プレイヤーの Lv・Ping・座標・建築数を表示。キック / BAN |
 | ワールド | プレイヤー座標のマップ表示と異常検知（高 Ping、建築数過多） |
 | 稼働履歴 | 一定間隔で記録した FPS・人数・メモリをグラフ表示 |
-| サーバ設定 | **サーバ操作の集約先** — 起動 / 再起動 / 停止 / ワールド保存。PalWorldSettings.ini をブラウザから編集（保存前に自動バックアップ、世代管理と復元） |
+| サーバ設定 | **サーバ操作の集約先** — 起動 / 再起動 / 停止 / ワールド保存。PalWorldSettings.ini の全文編集（保存前に自動バックアップ、世代管理と復元） |
+| ゲーム設定 | PalWorldSettings.ini を**項目ごとのフォームで編集**。カテゴリ分け・検索・差分確認つき |
 | 再起動予約 | 毎日 / 単発 / cron 式。予約ごとに予告文と予告タイミングを設定 |
 | ログ | WebSocket で journalctl の出力と管理ツール自身のログをストリーミング |
 
@@ -34,6 +35,25 @@ UI も API も一通り動作確認できる。
 - 文面の `{time}` は残り時間（「5分」「30秒」）に置き換わる
 - 予告タイミングは 10分前 / 5分前 / 3分前 / 1分前 / 30秒前 / 10秒前 から選択、任意の秒数も追加可能
 - 送信したアナウンスはすべて履歴に残る（手動 / 再起動 / 停止 / 予約 / システムの区分つき、送信失敗も記録）
+
+### ゲーム設定（項目ごとの編集）
+
+`PalWorldSettings.ini` は全項目が1行に詰まった独自形式なので、全文編集だと事故りやすい。
+「ゲーム設定」タブでは項目ごとに型に応じた入力欄を出す。
+
+- **有効/無効はプルダウン**、難易度やデスペナルティは選択肢のプルダウン
+- 倍率や上限値は範囲（min/max/step）つきの数値入力。範囲外はサーバ側で 400 で弾く
+- パスワード項目は伏字表示（ボタンで表示切替）
+- 8カテゴリに分類 + 項目名での絞り込み + 「変更した項目だけ表示」
+- 保存前に**変更点の一覧（変更前 → 変更後）をモーダルで確認**。変更した項目だけを書き戻す
+- 値が変わっていなければ書き込まない（無駄なバックアップを増やさない）
+
+**Palworld の更新で項目が増えても壊れない。** スキーマに無いキーは ini 上の値から
+型を推論して「未知」バッジ付きで編集できるようにしてある。
+知らない項目を UI から消してしまうと保存時に消滅するのが一番まずいので、そこは必ず通す。
+
+なお `settings_schema.py` のスキーマに定義があっても、**実際のファイルに無いキーは表示も追加もしない**。
+勝手に書き足すと、ゲーム側の既定値が変わったときに追従できなくなるため。
 
 ### Discord 通知
 
@@ -63,7 +83,6 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 ## ディレクトリ構成
 
 ```
-dashboard-Pal/
 ~/work/Pal/dashboard-Pal/
 ├── backend/
 │   ├── app/
@@ -75,11 +94,12 @@ dashboard-Pal/
 │   │   ├── scheduler.py     再起動予約（APScheduler）
 │   │   ├── monitor.py       定期サンプリングと閾値アラート
 │   │   ├── settings_ini.py  PalWorldSettings.ini の読み書きとバックアップ
+│   │   ├── settings_schema.py 各設定項目の型・範囲・カテゴリ定義
 │   │   ├── logstream.py     ログの収集と WebSocket 配信
 │   │   ├── notify.py        Discord Webhook
 │   │   └── services.py      systemd ユニット操作
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（105件）
+│   ├── tests/               pytest（147件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
@@ -143,6 +163,14 @@ curl -XPOST http://127.0.0.1:8080/api/service/start -H 'Content-Type: applicatio
 
 # アナウンス履歴
 curl 'http://127.0.0.1:8080/api/announcements?limit=20'
+
+# ゲーム設定をフォーム定義として取得
+curl http://127.0.0.1:8080/api/settings-ini/fields
+
+# 項目を指定して更新（書式化と検証はサーバ側で行う）
+curl -XPUT http://127.0.0.1:8080/api/settings-ini/fields \
+  -H 'Content-Type: application/json' \
+  -d '{"values":{"ExpRate":2.5,"bIsPvP":true,"Difficulty":"Hard"}}'
 ```
 
 ## テスト
@@ -159,6 +187,7 @@ mise run test
 | `test_restart.py` | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、アナウンス必須化、停止シーケンス、Discord の流量 |
 | `test_announce.py` | アナウンス履歴の記録・永続化・上限・フィルタ、送信失敗の記録、サービス操作 |
 | `test_settings_ini.py` | ini のパース（引用符内カンマ含む）、更新、バックアップ、復元、不正な内容の拒否、パストラバーサル防止 |
+| `test_settings_schema.py` | 項目の型解釈と書式化、未知キーの型推論、範囲/選択肢の検証、フォーム経由の更新 |
 | `test_scheduler.py` | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
 | `test_monitor.py` | メトリクス記録、メモリ閾値アラートと cooldown、サーバ up/down 検知、ログ配信 |
 
