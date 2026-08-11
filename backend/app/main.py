@@ -28,8 +28,17 @@ from .restart import (
     RestartValidationError,
 )
 from .scheduler import RestartScheduler, ScheduleError
-from .services import SystemdService
+from .services import build_service
 from .settings_ini import SettingsIniError, SettingsIniStore
+from .settings_schema import (
+    CATEGORIES,
+    add_custom_fields,
+    add_fields,
+    build_updates,
+    describe,
+    discovered_fields,
+    missing_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +77,35 @@ class RestartBody(BaseModel):
 class SettingsIniBody(BaseModel):
     text: str | None = None
     options: dict[str, str] | None = None
+    # ゲームサーバ稼働中でも書き込む
+    force: bool = False
 
 
 class RestoreBody(BaseModel):
     name: str
+
+
+class CustomFieldBody(BaseModel):
+    """スキーマに無い新しいプロパティ。型はユーザーが指定する。"""
+
+    name: str = Field(min_length=1, max_length=100)
+    type: str
+    value: Any = None
+
+
+class SettingsFieldsBody(BaseModel):
+    """フォームから来た項目単位の値。ini への書式化はサーバ側で行う。
+
+    values            : 既に設定ファイルにある項目の変更
+    additions         : スキーマ定義のある未設定項目の追加
+    custom_additions  : スキーマに無い新しいプロパティの追加（名前と型を明示）
+    force             : ゲームサーバ稼働中でも書き込む（下の注意を参照）
+    """
+
+    values: dict[str, Any] = Field(default_factory=dict)
+    additions: dict[str, Any] = Field(default_factory=dict)
+    custom_additions: list[CustomFieldBody] = Field(default_factory=list)
+    force: bool = False
 
 
 class ScheduleBody(BaseModel):
@@ -122,7 +156,12 @@ def create_app(
         timeout=cfg.pal_timeout,
     )
     notify = notifier or DiscordNotifier(cfg.discord_webhook_url, cfg.discord_alert_webhook_url)
-    service = SystemdService(cfg.pal_service_name, dry_run=cfg.dry_run)
+    service = build_service(
+        cfg.pal_service_backend,
+        unit=cfg.pal_service_name,
+        dry_run=cfg.dry_run,
+        mock_control_url=cfg.pal_mock_control_url,
+    )
     ini_store = SettingsIniStore(cfg.pal_settings_ini, cfg.backup_dir, keep=cfg.backup_keep)
     monitor = Monitor(
         pal,
@@ -187,6 +226,7 @@ def create_app(
             app_logger.setLevel(previous_level)
             await pal.aclose()
             await notify.aclose()
+            await service.aclose()
 
     app = FastAPI(title="Palworld Server Manager", version="0.1.0", lifespan=lifespan)
 
@@ -217,6 +257,22 @@ def create_app(
             raise HTTPException(401, "認証に失敗しました", headers={"WWW-Authenticate": "Basic"})
 
     auth = [Depends(require_auth)]
+
+    async def game_server_running() -> bool:
+        """ゲームサーバが動いているか。
+
+        ini の書き換えは停止中にしか安全に行えないため、その判定に使う。
+        REST API に到達できれば確実に動いている。到達できない場合でも
+        systemd 側が active ならプロセスは生きているとみなす。
+        """
+        try:
+            await pal.info()
+            return True
+        except PalApiError:
+            pass
+        # REST API が無効な構成もあるので、プロセス側にも聞く。
+        # 判定できない場合（None）は停止扱いにする — 保存を過剰に止めないため。
+        return bool(await service.is_active())
 
     @app.exception_handler(PalApiError)
     async def _pal_error_handler(request: Request, exc: PalApiError) -> JSONResponse:
@@ -466,6 +522,13 @@ def create_app(
     async def put_ini(body: SettingsIniBody) -> dict[str, Any]:
         if body.text is None and body.options is None:
             raise HTTPException(400, "text か options のどちらかを指定してください")
+        if not body.force and await game_server_running():
+            raise HTTPException(
+                409,
+                "ゲームサーバが稼働中です。Palworld は停止時に ini を上書きするため、"
+                "稼働中に書き換えても次の停止で失われます。"
+                "サーバを停止してから保存してください。",
+            )
         try:
             if body.text is not None:
                 backup = ini_store.write_text(body.text)
@@ -475,10 +538,106 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         await notify.send(
             "サーバ設定を更新しました",
-            f"バックアップ: {backup.name}\n反映にはサーバの再起動が必要です。",
+            f"バックアップ: {backup.name}\nサーバを起動すると反映されます。",
             "info",
         )
-        return {"result": "ok", "backup": backup.name, "restart_required": True}
+        return {"result": "ok", "backup": backup.name, "start_required": True}
+
+    @app.get("/api/settings-ini/fields", dependencies=auth)
+    async def get_ini_fields() -> dict[str, Any]:
+        """ini を項目ごとのフォーム定義として返す。
+
+        返すのは実際にファイルへ書かれているキーだけ。
+        スキーマに無い項目も値から型を推論して編集できるようにする。
+        """
+        if not ini_store.exists():
+            return {
+                "exists": False,
+                "path": str(cfg.pal_settings_ini),
+                "categories": [],
+                "category_labels": [{"key": k, "label": v} for k, v in CATEGORIES],
+            }
+        options = ini_store.read_options()
+
+        # 稼働中のサーバが持っている設定を、新しいプロパティの発見源として使う。
+        # 落ちていても画面は出したいので、失敗は握りつぶす。
+        server_settings: dict[str, Any] = {}
+        try:
+            server_settings = await pal.settings()
+        except PalApiError:
+            pass
+
+        return {
+            "exists": True,
+            "path": str(cfg.pal_settings_ini),
+            "categories": describe(options),
+            # 設定ファイルに書かれていない項目。ゲーム側の既定値で動いているので、
+            # 変えたいならユーザーが明示的に追加する
+            "available": missing_fields(options),
+            # ini にもスキーマにも無いが、サーバが持っている項目
+            "discovered": discovered_fields(server_settings, options),
+            "category_labels": [{"key": k, "label": v} for k, v in CATEGORIES],
+            # ini はサーバ停止中でないと安全に書き換えられない
+            "server_running": await game_server_running(),
+        }
+
+    @app.put("/api/settings-ini/fields", dependencies=auth)
+    async def put_ini_fields(body: SettingsFieldsBody) -> dict[str, Any]:
+        """変更した項目だけを受け取って ini に反映する。"""
+        if not ini_store.exists():
+            raise HTTPException(404, f"設定ファイルが見つかりません: {cfg.pal_settings_ini}")
+
+        if not body.values and not body.additions and not body.custom_additions:
+            raise HTTPException(400, "更新する項目がありません")
+
+        # Palworld は停止時に、メモリ上の設定で PalWorldSettings.ini を上書きする。
+        # 稼働中に書き換えても次の停止で消えるので、既定では止める。
+        if not body.force and await game_server_running():
+            raise HTTPException(
+                409,
+                "ゲームサーバが稼働中です。Palworld は停止時に ini を上書きするため、"
+                "稼働中に書き換えても次の停止で失われます。"
+                "サーバを停止してから保存してください。",
+            )
+
+        options = ini_store.read_options()
+        updates, errors = build_updates(body.values, options)
+        added, add_errors = add_fields(body.additions, options)
+        custom, custom_errors = add_custom_fields(
+            [c.model_dump() for c in body.custom_additions], options
+        )
+        added.update(custom)
+        errors += add_errors + custom_errors
+        if errors:
+            raise HTTPException(400, " / ".join(errors))
+
+        # 値が変わっていないものは書かない（無駄なバックアップを増やさない）
+        changed = {k: v for k, v in updates.items() if options.get(k) != v}
+        changed.update(added)
+        if not changed:
+            return {"result": "unchanged", "changed": {}, "added": [], "restart_required": False}
+
+        try:
+            backup = ini_store.update_options(changed)
+        except SettingsIniError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        detail = "変更: " + ", ".join(f"{k}={v}" for k, v in changed.items())
+        if added:
+            detail += "\n（うち新規追加: " + ", ".join(added) + "）"
+        await notify.send(
+            "サーバ設定を更新しました",
+            detail + f"\nバックアップ: {backup.name}\nサーバを起動すると反映されます。",
+            "info",
+        )
+        return {
+            "result": "ok",
+            "backup": backup.name,
+            "changed": changed,
+            "added": sorted(added),
+            # 停止中に書いた前提なので、あとは起動すれば反映される
+            "start_required": True,
+        }
 
     @app.post("/api/settings-ini/restore", dependencies=auth)
     async def restore_ini(body: RestoreBody) -> dict[str, Any]:

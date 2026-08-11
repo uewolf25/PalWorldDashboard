@@ -1,8 +1,18 @@
-"""PalWorldSettings.ini の編集・バックアップのテスト。"""
+"""PalWorldSettings.ini の編集・バックアップのテスト。
+
+Palworld は停止時にメモリ上の設定で ini を上書きするため、
+書き換えはサーバ停止中しか許可されない。このモジュールは停止中を前提とする。
+"""
 
 from __future__ import annotations
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stopped(server_stopped):
+    """このモジュールのテストはすべてゲームサーバ停止中で動かす。"""
+    return server_stopped
 
 from app.settings_ini import apply_options, parse_options, split_options
 
@@ -42,7 +52,7 @@ async def test_update_options_creates_backup(client, ini_path, settings):
     resp = await client.put("/api/settings-ini", json={"options": {"ExpRate": "3.000000"}})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["restart_required"] is True
+    assert body["start_required"] is True
     assert body["backup"].startswith("PalWorldSettings.")
 
     # 実ファイルに反映されている

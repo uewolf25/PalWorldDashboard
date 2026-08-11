@@ -70,9 +70,16 @@ class Settings:
     app_password: str = field(default_factory=lambda: _env("APP_PASSWORD", ""))
     app_user: str = field(default_factory=lambda: _env("APP_USER", "admin"))
 
-    # --- ゲームサーバの systemd ユニット ---
+    # --- ゲームサーバのプロセス制御 ---
     pal_service_name: str = field(
         default_factory=lambda: _env("PAL_SERVICE_NAME", "palworld.service")
+    )
+    # systemd / mock。mock は開発用で、モックサーバを起動/停止する
+    pal_service_backend: str = field(
+        default_factory=lambda: _env("PAL_SERVICE_BACKEND", "systemd")
+    )
+    pal_mock_control_url: str = field(
+        default_factory=lambda: _env("PAL_MOCK_CONTROL_URL", "http://127.0.0.1:8212")
     )
 
     # --- 設定ファイル ---
@@ -182,6 +189,7 @@ class Settings:
             "pal_admin_user": self.pal_admin_user,
             "pal_admin_password": mask_secret(self.pal_admin_password),
             "pal_service_name": self.pal_service_name,
+            "pal_service_backend": self.pal_service_backend,
             "pal_settings_ini": str(self.pal_settings_ini),
             "schedule_timezone": self.schedule_timezone,
             "restart_announce_template": self.restart_announce_template,

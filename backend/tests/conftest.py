@@ -44,6 +44,17 @@ async def pal_client(mock_state):
 
 
 @pytest.fixture
+def server_stopped(mock_state):
+    """ゲームサーバが停止している状態。
+
+    Palworld は停止時にメモリ上の設定で ini を上書きするため、
+    設定ファイルの書き換えは停止中しか許可されない。
+    """
+    mock_state.running = False
+    return mock_state
+
+
+@pytest.fixture
 def ini_path(tmp_path: Path) -> Path:
     path = tmp_path / "PalWorldSettings.ini"
     path.write_text(SAMPLE_INI, encoding="utf-8")

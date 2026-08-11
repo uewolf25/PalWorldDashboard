@@ -17,7 +17,8 @@ UI も API も一通り動作確認できる。
 | プレイヤー | 接続中プレイヤーの Lv・Ping・座標・建築数を表示。キック / BAN |
 | ワールド | プレイヤー座標のマップ表示と異常検知（高 Ping、建築数過多） |
 | 稼働履歴 | 一定間隔で記録した FPS・人数・メモリをグラフ表示 |
-| サーバ設定 | **サーバ操作の集約先** — 起動 / 再起動 / 停止 / ワールド保存。PalWorldSettings.ini をブラウザから編集（保存前に自動バックアップ、世代管理と復元） |
+| サーバ設定 | **サーバ操作の集約先** — 起動 / 再起動 / 停止 / ワールド保存。PalWorldSettings.ini の全文編集（保存前に自動バックアップ、世代管理と復元） |
+| ゲーム設定 | PalWorldSettings.ini を**項目ごとのフォームで編集**。カテゴリ分け・検索・差分確認つき |
 | 再起動予約 | 毎日 / 単発 / cron 式。予約ごとに予告文と予告タイミングを設定 |
 | ログ | WebSocket で journalctl の出力と管理ツール自身のログをストリーミング |
 
@@ -34,6 +35,54 @@ UI も API も一通り動作確認できる。
 - 文面の `{time}` は残り時間（「5分」「30秒」）に置き換わる
 - 予告タイミングは 10分前 / 5分前 / 3分前 / 1分前 / 30秒前 / 10秒前 から選択、任意の秒数も追加可能
 - 送信したアナウンスはすべて履歴に残る（手動 / 再起動 / 停止 / 予約 / システムの区分つき、送信失敗も記録）
+
+### ゲーム設定（項目ごとの編集）
+
+`PalWorldSettings.ini` は全項目が1行に詰まった独自形式なので、全文編集だと事故りやすい。
+「ゲーム設定」タブでは項目ごとに型に応じた入力欄を出す。
+
+- **有効/無効はプルダウン**、難易度やデスペナルティは選択肢のプルダウン
+- 倍率や上限値は範囲（min/max/step）つきの数値入力。範囲外はサーバ側で 400 で弾く
+- パスワード項目は伏字表示（ボタンで表示切替）
+- 8カテゴリに分類 + 項目名での絞り込み + 「変更した項目だけ表示」
+- 保存前に**変更点の一覧（変更前 → 変更後）をモーダルで確認**。変更した項目だけを書き戻す
+- 値が変わっていなければ書き込まない（無駄なバックアップを増やさない）
+
+**設定ファイルに書かれていない項目も設定できる。** Palworld は未記載の項目を内蔵の既定値で動かすため、
+`bIsPvP` を有効にしたいのにファイルに行が無い、ということが起きる。
+そうした項目は「未設定の項目」として別枠に出し、**「追加」を押したものだけ**書き足す。
+黙って書き足さないのは、ゲーム側の既定値が変わったときに追従できなくなるため。
+公式の既定値が確認できている項目はそれを初期値として提示し、裏取りできていない項目は
+「既定値は未確認」と明示する（推測値を既定値として出すと事故になる）。
+
+#### ⚠️ 保存はサーバ停止中のみ
+
+**Palworld は停止時に、メモリ上の設定で `PalWorldSettings.ini` を上書きする。**
+そのため稼働中に編集しても、次にサーバを止めた時点で書き戻されて消える。
+
+正しい手順は **サーバを停止 → 編集して保存 → サーバを起動**。
+`PUT /api/settings-ini` と `PUT /api/settings-ini/fields` は稼働中だと 409 を返して保存を止める
+（緊急時は `force: true` で上書きできるが、失われる前提で使うこと）。
+画面にも稼働中は警告を出し、保存ボタンからサーバ操作へ誘導する。
+
+#### 新しいプロパティへの追従
+
+設定項目の情報源は3つある。
+
+| 情報源 | 内容 | 更新 |
+|--------|------|------|
+| `settings_schema.py` の `FIELDS` | 82項目の型・ラベル・範囲・カテゴリ。**手書き** | このツールの更新が必要 |
+| 稼働中サーバの `/v1/api/settings` | サーバ自身が持つ設定。**権威ある情報源** | 自動 |
+| 設定ファイルの実際の中身 | いま書かれているキー | 自動 |
+
+手書きスキーマは Palworld の更新に必ず遅れるので、以下で補っている。
+
+- **ini にある未知のキー** — 値から型を推論し「未知」バッジ付きで編集できる
+- **サーバが持つ未設定のキー** — `/v1/api/settings` と突き合わせて「未設定の項目」に出す
+- **どこにも無いキー** — 「一覧に無い項目を自分で追加」から名前と型を指定して書き足せる
+
+これでツールの更新を待たずに新プロパティを設定できる。
+項目名は `^[A-Za-z_][A-Za-z0-9_]*$` に限定し、`OptionSettings` の構文が壊れないようにしている。
 
 ### Discord 通知
 
@@ -56,6 +105,7 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 - **無告知でサーバを落とさない** — アナウンス文と予告タイミングを API レベルで必須にしている（既定値へのフォールバックなし）
 - **予告の失敗でシーケンスを止めない** — アナウンスが届かなくても保存と停止は続行し、失敗は履歴に残す
 - **設定ファイルを壊さない** — `OptionSettings` 行が無い内容は 400 で弾き、書き込みは一時ファイル経由で原子的に置換
+- **消える変更を書かせない** — Palworld が停止時に ini を上書きする仕様のため、稼働中の保存は 409 で止める
 - **ゲームサーバが落ちていても画面は出る** — `/api/status` は常に 200 を返し、`online: false` で表現する
 - **XSS 対策** — 値の描画は必ず `textContent`。`innerHTML` は使わない
 - **秘密情報の伏字化** — Webhook URL と AdminPassword は `/api/config` で伏字にして返す
@@ -63,7 +113,6 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 ## ディレクトリ構成
 
 ```
-dashboard-Pal/
 ~/work/Pal/dashboard-Pal/
 ├── backend/
 │   ├── app/
@@ -75,11 +124,12 @@ dashboard-Pal/
 │   │   ├── scheduler.py     再起動予約（APScheduler）
 │   │   ├── monitor.py       定期サンプリングと閾値アラート
 │   │   ├── settings_ini.py  PalWorldSettings.ini の読み書きとバックアップ
+│   │   ├── settings_schema.py 各設定項目の型・範囲・カテゴリ定義
 │   │   ├── logstream.py     ログの収集と WebSocket 配信
 │   │   ├── notify.py        Discord Webhook
-│   │   └── services.py      systemd ユニット操作
+│   │   └── services.py      ゲームサーバのプロセス制御（systemd / 開発用モック）
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（105件）
+│   ├── tests/               pytest（186件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
@@ -122,6 +172,15 @@ curl -XPOST 'http://127.0.0.1:8212/__mock__/fail?fail_all=true'   # サーバ応
 curl -XPOST 'http://127.0.0.1:8212/__mock__/fail?fail_save=true'  # ワールド保存だけ失敗させる
 curl -XPOST 'http://127.0.0.1:8212/__mock__/fps?value=12'  # FPS を固定
 curl -XPOST http://127.0.0.1:8212/__mock__/reset           # 初期状態に戻す
+
+# サーバの起動/停止（systemctl 相当。停止中でも制御できる）
+curl     http://127.0.0.1:8212/__mock__/status
+curl -XPOST http://127.0.0.1:8212/__mock__/stop
+curl -XPOST http://127.0.0.1:8212/__mock__/start
+
+# アップデートで新プロパティが増えた状況を再現（項目発見の確認用）
+curl -XPOST http://127.0.0.1:8212/__mock__/settings \
+  -H 'Content-Type: application/json' -d '{"bNewFeatureFromPatch":true}'
 ```
 
 `dev.sh` では予告間隔を 30/10/5 秒に縮めてあるので、再起動シーケンスもすぐ確認できる。
@@ -143,7 +202,62 @@ curl -XPOST http://127.0.0.1:8080/api/service/start -H 'Content-Type: applicatio
 
 # アナウンス履歴
 curl 'http://127.0.0.1:8080/api/announcements?limit=20'
+
+# ゲーム設定をフォーム定義として取得
+curl http://127.0.0.1:8080/api/settings-ini/fields
+
+# 既存項目の変更（書式化と検証はサーバ側で行う）
+curl -XPUT http://127.0.0.1:8080/api/settings-ini/fields \
+  -H 'Content-Type: application/json' \
+  -d '{"values":{"ExpRate":2.5,"bIsPvP":true,"Difficulty":"Hard"}}'
+
+# ファイルに無い項目の追加（additions は明示指定でのみ書き足される）
+curl -XPUT http://127.0.0.1:8080/api/settings-ini/fields \
+  -H 'Content-Type: application/json' \
+  -d '{"additions":{"ItemWeightRate":0.5}}'
+
+# 一覧に無い新プロパティを、名前と型を指定して追加
+curl -XPUT http://127.0.0.1:8080/api/settings-ini/fields \
+  -H 'Content-Type: application/json' \
+  -d '{"custom_additions":[{"name":"bNewFlagFromPatch","type":"bool","value":true}]}'
+
+# ※ いずれもゲームサーバ停止中でないと 409 になる
 ```
+
+## 設定ファイル（.env）の置き場所
+
+アプリは**環境変数しか見ない**（`config.py` が `os.environ` を読むだけ）。
+ファイルから環境変数への読み込みは、開発なら `dev.sh`、本番なら systemd が担当する。
+
+| ファイル | 用途 | git | 権限 | 読む人 |
+|----------|------|-----|------|--------|
+| `dashboard-Pal.env.example` | **見本。キーと説明だけで値は空** | 追跡する | 644 | 人間 |
+| `.dev/local.env` | **開発用の秘密情報** | 追跡しない | 600 | `dev.sh` |
+| `/etc/dashboard-Pal.env` | **本番の全設定** | サーバ上にのみ存在 | 600 root:root | systemd |
+
+### どこに何を書くか
+
+| 書きたいもの | 開発 | 本番 |
+|--------------|------|------|
+| Discord Webhook URL、各種パスワード | `.dev/local.env` | `/etc/dashboard-Pal.env` |
+| ポート、パス、予告間隔などの非秘密設定 | `scripts/dev.sh`（既に設定済み。変えたいときだけ `.dev/local.env` で上書き） | `/etc/dashboard-Pal.env` |
+| 新しい環境変数を増やしたとき | 上記に加えて `dashboard-Pal.env.example` に**キーと説明だけ**追記 | 同左 |
+
+**`*.env.example` に実際の値を書かないこと。** git に追跡されているので、
+Webhook URL やパスワードを書くとそのままリポジトリに載る。
+値の要る場所は `.dev/local.env` か `/etc/dashboard-Pal.env` のどちらかしかない。
+
+```bash
+# 開発用の秘密情報を置く（.dev/ は .gitignore 済み）
+cat > .dev/local.env <<'EOF'
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+DISCORD_ALERT_WEBHOOK_URL=https://discord.com/api/webhooks/...
+EOF
+chmod 600 .dev/local.env
+```
+
+`dev.sh` は自分の `export` を済ませたあとに `.dev/local.env` を読む。
+つまり `local.env` に書いた値が優先される（`PAL_ENV` などの上書きも可能）。
 
 ## テスト
 
@@ -158,7 +272,9 @@ mise run test
 | `test_dashboard.py` | ステータス、プレイヤー一覧、キック/BAN/UNBAN、ワールド、履歴、Basic 認証、秘密情報の伏字化 |
 | `test_restart.py` | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、アナウンス必須化、停止シーケンス、Discord の流量 |
 | `test_announce.py` | アナウンス履歴の記録・永続化・上限・フィルタ、送信失敗の記録、サービス操作 |
+| `test_services.py` | モックの稼働状態、起動/停止の反映、到達不能時の判定、停止→編集→起動の一連の流れ |
 | `test_settings_ini.py` | ini のパース（引用符内カンマ含む）、更新、バックアップ、復元、不正な内容の拒否、パストラバーサル防止 |
+| `test_settings_schema.py` | 項目の型解釈と書式化、未知キーの型推論、範囲/選択肢の検証、フォーム経由の更新 |
 | `test_scheduler.py` | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
 | `test_monitor.py` | メトリクス記録、メモリ閾値アラートと cooldown、サーバ up/down 検知、ログ配信 |
 

@@ -53,6 +53,10 @@ def _new_player(idx: int) -> dict[str, Any]:
 class MockState:
     """モックサーバの可変状態。テストから直接書き換えて挙動を作る。"""
 
+    # ゲームサーバのプロセスが動いているか。
+    # False の間は /v1/api/* が 503 を返す（停止中のサーバに繋がらない状況の再現）。
+    # __mock__/* の制御エンドポイントは停止中でも応答する（systemd に相当する面のため）。
+    running: bool = True
     started_at: float = field(default_factory=time.time)
     players: list[dict[str, Any]] = field(default_factory=list)
     banned: list[str] = field(default_factory=list)
@@ -73,6 +77,7 @@ class MockState:
     settings_overrides: dict[str, Any] = field(default_factory=dict)
 
     def reset(self, player_count: int = 3) -> None:
+        self.running = True
         self.started_at = time.time()
         self.players = [_new_player(i) for i in range(player_count)]
         self.banned = []
@@ -130,6 +135,13 @@ def require_admin(creds: HTTPBasicCredentials | None = Depends(_security)) -> No
 
 
 def _guard() -> None:
+    """/v1/api/* の共通ガード。
+
+    停止中は実機なら接続自体が拒否される。HTTP では表現できないので 503 を返す。
+    管理ツール側は 4xx/5xx をまとめて PalApiError にするため、挙動は等価になる。
+    """
+    if not STATE.running:
+        raise HTTPException(status_code=503, detail="mock: server is not running")
     if STATE.fail_all:
         raise HTTPException(status_code=500, detail="mock: induced failure")
 
@@ -263,6 +275,8 @@ def shutdown(body: ShutdownBody, _: None = Depends(require_admin)) -> dict[str, 
     _guard()
     STATE.shutdowns.append({"waittime": body.waittime, "message": body.message})
     STATE.players = []
+    # 実機と同じく、この API はサーバプロセスを落とす
+    STATE.running = False
     return {"result": "ok"}
 
 
@@ -271,11 +285,46 @@ def stop(_: None = Depends(require_admin)) -> dict[str, str]:
     _guard()
     STATE.stops += 1
     STATE.players = []
+    STATE.running = False
     return {"result": "ok"}
 
 
 # --- モック専用の操作エンドポイント（実機には無い） -----------------------
 # standalone で動かして UI を触るときに、状況を作るために使う。
+#
+# 停止中でも応答する。実機では systemd がこの役割（プロセスの起動/停止）を持ち、
+# ゲームサーバが落ちていても systemctl は動くのと同じ関係にしてある。
+
+
+@app.get("/__mock__/status")
+def mock_status() -> dict[str, Any]:
+    return {"running": STATE.running, "players": len(STATE.players)}
+
+
+@app.post("/__mock__/start")
+def mock_start() -> dict[str, Any]:
+    """停止中のサーバを起動する（systemctl start 相当）。"""
+    if not STATE.running:
+        STATE.running = True
+        STATE.started_at = time.time()
+    return {"running": STATE.running}
+
+
+@app.post("/__mock__/stop")
+def mock_stop() -> dict[str, Any]:
+    """サーバを停止する（systemctl stop 相当）。"""
+    STATE.running = False
+    STATE.players = []
+    return {"running": STATE.running}
+
+
+@app.post("/__mock__/restart")
+def mock_restart() -> dict[str, Any]:
+    """停止して起動し直す（systemctl restart 相当）。"""
+    STATE.running = True
+    STATE.started_at = time.time()
+    STATE.players = [_new_player(i) for i in range(3)]
+    return {"running": STATE.running}
 
 
 @app.post("/__mock__/reset")
@@ -308,3 +357,14 @@ def mock_fail(fail_all: bool = False, fail_save: bool = False) -> dict[str, Any]
 def mock_fps(value: int | None = None) -> dict[str, Any]:
     STATE.fixed_fps = value
     return {"fixed_fps": STATE.fixed_fps}
+
+
+@app.post("/__mock__/settings")
+def mock_settings(overrides: dict[str, Any]) -> dict[str, Any]:
+    """/v1/api/settings が返す内容に項目を足す/上書きする。
+
+    「Palworld のアップデートで新しいプロパティが増えた」状況を再現して、
+    管理ツール側の項目発見を確認するために使う。
+    """
+    STATE.settings_overrides.update(overrides)
+    return STATE.settings_overrides
