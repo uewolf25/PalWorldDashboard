@@ -45,6 +45,7 @@ export PAL_MOCK_CONTROL_URL=http://127.0.0.1:8212
 export PAL_SETTINGS_INI="$DEV/PalWorldSettings.ini"
 export PAL_BACKUP_DIR="$DEV/backups"
 export PAL_SCHEDULE_STORE="$DEV/schedules.json"
+export PAL_PENDING_STORE="$DEV/pending-settings.json"
 export SCHEDULE_TIMEZONE=Asia/Tokyo
 # 開発では待たされたくないので予告を短くする
 export RESTART_NOTICE_OFFSETS=${RESTART_NOTICE_OFFSETS:-30,10,5}

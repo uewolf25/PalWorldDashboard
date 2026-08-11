@@ -17,11 +17,18 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 from .announce import Announcer, render_template
 from .palapi import PalApiError, PalworldClient
-from .services import SystemdService
+from .pending import ApplyResult
+from .services import GameService
+
+# サーバが完全に停止したあとに呼ばれ、保留中の設定変更を ini に書き込む。
+# 引数はこの停止機会に紐づく予約 ID（手動実行なら None）。
+ApplyPending = Callable[[str | None], Awaitable[ApplyResult]]
+# この停止機会で反映される保留変更の件数
+CountPending = Callable[[str | None], int]
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +90,10 @@ class RestartStatus:
     mode: Mode = "restart"
     reason: str = ""
     announce_message: str = ""
+    # この停止機会に紐づく予約 ID（手動実行なら None）
+    schedule_id: str | None = None
+    # 反映した保留中の設定変更の結果
+    applied: dict[str, Any] | None = None
     started_at: float | None = None
     finished_at: float | None = None
     restart_at: float | None = None
@@ -96,6 +107,8 @@ class RestartStatus:
             "mode_label": MODE_LABELS.get(self.mode, self.mode),
             "reason": self.reason,
             "announce_message": self.announce_message,
+            "schedule_id": self.schedule_id,
+            "applied": self.applied,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "restart_at": self.restart_at,
@@ -114,17 +127,23 @@ class RestartManager:
         self,
         pal: PalworldClient,
         announcer: Announcer,
-        service: SystemdService,
+        service: GameService,
         *,
         notice_offsets: tuple[float, ...] | list[float] = DEFAULT_NOTICE_OFFSETS,
         announce_template: str = DEFAULT_RESTART_TEMPLATE,
         debounce_sec: float = 60.0,
         shutdown_waittime: int = 10,
         use_systemd: bool = True,
+        apply_pending: ApplyPending | None = None,
+        count_pending: CountPending | None = None,
     ) -> None:
         self._pal = pal
         self._announcer = announcer
         self._service = service
+        # サーバ停止後に保留中の設定変更を反映するフックと、その件数を数えるフック。
+        # 件数は「再起動を stop→書き込み→start に分ける必要があるか」の判定に使う
+        self._apply_pending = apply_pending
+        self._count_pending = count_pending
         self.notice_offsets = tuple(sorted((float(o) for o in notice_offsets), reverse=True))
         self.announce_template = announce_template
         self.debounce_sec = debounce_sec
@@ -159,6 +178,7 @@ class RestartManager:
         notice_offsets: tuple[float, ...] | list[float] | None = None,
         mode: Mode = "restart",
         force: bool = False,
+        schedule_id: str | None = None,
     ) -> RestartStatus:
         """再起動/停止シーケンスをバックグラウンドで開始する。
 
@@ -195,12 +215,13 @@ class RestartManager:
             mode=mode,
             reason=reason,
             announce_message=template,
+            schedule_id=schedule_id,
             started_at=now,
             restart_at=now + lead,
             message=f"{humanize(lead)}後に{label}します" if lead else f"まもなく{label}します",
         )
         self._task = asyncio.create_task(
-            self._run(reason, template, offsets, mode), name=f"{mode}-sequence"
+            self._run(reason, template, offsets, mode, schedule_id), name=f"{mode}-sequence"
         )
         return self.status
 
@@ -225,7 +246,12 @@ class RestartManager:
     # ---- 本体 ----------------------------------------------------------
 
     async def _run(
-        self, reason: str, template: str, offsets: tuple[float, ...], mode: Mode
+        self,
+        reason: str,
+        template: str,
+        offsets: tuple[float, ...],
+        mode: Mode,
+        schedule_id: str | None = None,
     ) -> None:
         label = MODE_LABELS.get(mode, mode)
         async with self._lock:
@@ -265,17 +291,25 @@ class RestartManager:
                     )
                     return
 
-                # --- 停止 → （再起動なら）起動 ---
+                # --- 停止 → 保留中の設定変更を反映 → （再起動なら）起動 ---
                 self.status.phase = "restarting"
                 self.status.message = f"サーバを{label}しています"
-                await self._shutdown(mode)
+                await self._shutdown(mode, schedule_id)
 
                 self.status.phase = "done"
                 self.status.message = f"{label}が完了しました"
                 self.status.finished_at = time.time()
+                detail = f"理由: {reason}"
+                applied = self.status.applied
+                if applied and applied.get("applied"):
+                    detail += f"\n設定変更 {applied['applied']} 件を反映しました: " + ", ".join(
+                        applied.get("keys", [])
+                    )
+                elif applied and applied.get("error"):
+                    detail += f"\n⚠️ 設定変更の反映に失敗しました: {applied['error']}"
                 await self._announcer.discord_only(
                     f"サーバー{label}が完了しました",
-                    f"理由: {reason}",
+                    detail,
                     source=mode,
                     reason=reason,
                 )
@@ -328,7 +362,7 @@ class RestartManager:
         if prev is not None and prev > 0:
             await asyncio.sleep(prev)
 
-    async def _shutdown(self, mode: Mode) -> None:
+    async def _shutdown(self, mode: Mode, schedule_id: str | None = None) -> None:
         label = MODE_LABELS.get(mode, mode)
         try:
             await self._pal.shutdown(
@@ -344,8 +378,74 @@ class RestartManager:
             return
 
         await asyncio.sleep(min(self.shutdown_waittime, 5))
-        result = await self._service.restart() if mode == "restart" else await self._service.stop()
-        step_name = "systemctl_restart" if mode == "restart" else "systemctl_stop"
-        self._step(step_name, ok=result.ok, detail=result.stdout or result.stderr)
+
+        if mode == "stop":
+            result = await self._service.stop()
+            self._step("systemctl_stop", ok=result.ok, detail=result.stdout or result.stderr)
+            if not result.ok:
+                raise RuntimeError(f"停止に失敗: {result.stderr}")
+            # 停止したので、保留中の設定変更を書き込める
+            await self._apply_pending_changes(schedule_id)
+            return
+
+        # --- 再起動 ---
+        # 保留中の変更があるときは restart をやめて stop → 書き込み → start に分ける。
+        # ini を書き換えられるのはサーバが完全に止まっている間だけなので、
+        # restart で一気に上げ直すとその隙間が作れない。
+        if not self._has_pending(schedule_id):
+            result = await self._service.restart()
+            self._step("systemctl_restart", ok=result.ok, detail=result.stdout or result.stderr)
+            if not result.ok:
+                raise RuntimeError(f"再起動に失敗: {result.stderr}")
+            return
+
+        result = await self._service.stop()
+        self._step("systemctl_stop", ok=result.ok, detail=result.stdout or result.stderr)
         if not result.ok:
-            raise RuntimeError(f"systemctl {mode} に失敗: {result.stderr}")
+            raise RuntimeError(f"停止に失敗: {result.stderr}")
+
+        await self._apply_pending_changes(schedule_id)
+
+        # 反映に失敗していてもサーバは必ず上げ直す。
+        # 設定が変わらないより、サーバが落ちたままの方が困る。
+        result = await self._service.start()
+        self._step("systemctl_start", ok=result.ok, detail=result.stdout or result.stderr)
+        if not result.ok:
+            raise RuntimeError(f"起動に失敗: {result.stderr}")
+
+    def _has_pending(self, schedule_id: str | None) -> bool:
+        if self._apply_pending is None or self._count_pending is None:
+            return False
+        return self._count_pending(schedule_id) > 0
+
+    async def _apply_pending_changes(self, schedule_id: str | None) -> None:
+        """サーバ停止中に、保留していた設定変更を ini へ書き込む。
+
+        ここで失敗してもシーケンスは止めない（呼び出し側が必ず起動し直す）。
+        保留中の変更は消さずに残すので、次の機会に再試行できる。
+        """
+        if self._apply_pending is None:
+            return
+        try:
+            result = await self._apply_pending(schedule_id)
+        except Exception as exc:  # pragma: no cover - 想定外
+            logger.exception("保留中の設定変更の反映で想定外のエラー")
+            self.status.applied = {"ok": False, "applied": 0, "keys": [], "error": str(exc)}
+            self._step("apply_settings", ok=False, detail=str(exc))
+            return
+
+        self.status.applied = result.as_dict()
+        if result.count == 0 and not result.error:
+            return
+        self._step(
+            "apply_settings",
+            ok=result.ok,
+            detail=(f"{result.count}件: " + ", ".join(result.keys)) if result.ok else result.error,
+        )
+        if not result.ok:
+            await self._announcer.discord_only(
+                "設定変更の反映に失敗しました",
+                f"{result.error}\n保留中の変更は残してあるので、次の停止時に再試行されます。",
+                source="system",
+                level="crit",
+            )

@@ -253,6 +253,8 @@ class ServerScheduler:
                     announce_message=sched.announce_message or None,
                     notice_offsets=sched.notice_offsets or None,
                     mode=sched.action,  # type: ignore[arg-type]
+                    # この予約に紐づけた設定変更を反映させるために渡す
+                    schedule_id=sched.id,
                 )
             except (RestartInProgress, RestartDebounced) as exc:
                 logger.info("スケジュール %s をスキップ: %s", schedule_id, exc)

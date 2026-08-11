@@ -1100,6 +1100,9 @@ function renderGameSettings(root) {
     el("label", { class: "row muted small" }, [onlyChanged, "変更した項目だけ表示"]),
   ]));
 
+  const pendingBox = el("div");
+  root.appendChild(pendingBox);
+
   const catbar = el("div", { class: "catbar" });
   const grid = el("div", { class: "fieldgrid" });
   const availableBox = el("div");
@@ -1122,6 +1125,8 @@ function renderGameSettings(root) {
   let available = [];
   let discovered = [];
   let serverRunning = false;
+  let pendingItems = [];      // 反映待ちの変更
+  let schedules = [];         // 反映先に選べる予約（再起動/停止のみ）
   // 自分で名前と型を指定して追加した項目: name -> {name, type, value, label, ...}
   const customs = new Map();
   let activeCat = "__all__";
@@ -1449,6 +1454,64 @@ function renderGameSettings(root) {
     ]);
   }
 
+  // 反映タイミングの選択。ここが「稼働中でも保存できる」入口になる
+  function timingPicker() {
+    const usable = schedules.filter(s => s.enabled && s.action !== "start");
+    const when = el("select", null, [
+      el("option", { value: "next_stop", text: "次にサーバが停止するとき（予約・手動どちらでも）" }),
+      usable.length ? el("option", { value: "schedule", text: "特定の予約のときに反映する" }) : null,
+      el("option", { value: "now", text: "今すぐ反映する" + (serverRunning ? "（サーバ停止が必要）" : "") }),
+    ]);
+    when.value = serverRunning ? "next_stop" : "now";
+
+    const schedSel = el("select", null, usable.map(s => el("option", {
+      value: s.id,
+      text: `${s.action_label} / ${s.label || s.spec} / 次回 ${fmtTime(s.next_action_at)}`,
+    })));
+    const schedBox = el("div", { class: "field", style: "display:none" }, [
+      el("label", { text: "反映先の予約" }), schedSel,
+    ]);
+    const note = el("input", { type: "text", placeholder: "メモ（任意。例: PvP解禁）" });
+    const hint = el("div", { class: "muted small" });
+
+    function sync() {
+      schedBox.style.display = when.value === "schedule" ? "" : "none";
+      if (when.value === "now") {
+        hint.textContent = serverRunning
+          ? "サーバが稼働中のため今すぐは保存できません。停止するか、別のタイミングを選んでください。"
+          : "設定ファイルに直接書き込みます。サーバを起動すると反映されます。";
+      } else if (when.value === "schedule") {
+        hint.textContent = "選んだ予約でサーバが停止したタイミングで、自動的に設定ファイルへ書き込まれます。";
+      } else {
+        hint.textContent = "予約・手動を問わず、次にサーバが停止したタイミングで自動的に書き込まれます。"
+          + "それまで設定ファイルには触りません。";
+      }
+    }
+    when.addEventListener("change", sync);
+    sync();
+
+    return {
+      nodes: [
+        field("いつ反映するか", when),
+        schedBox,
+        el("div", { class: "field" }, [el("label", { text: "メモ" }), note, hint]),
+      ],
+      get when() { return when.value; },
+      validate() {
+        if (when.value === "now" && serverRunning) {
+          return "サーバ稼働中は今すぐ反映できません。別のタイミングを選んでください。";
+        }
+        if (when.value === "schedule" && !schedSel.value) return "反映先の予約を選んでください";
+        return null;
+      },
+      payload() {
+        const p = { when: when.value, note: note.value.trim() };
+        if (when.value === "schedule") p.schedule_id = schedSel.value;
+        return p;
+      },
+    };
+  }
+
   function openSaveModal() {
     const list = el("div", { class: "difflist" });
     for (const [name, value] of edits) {
@@ -1467,42 +1530,37 @@ function renderGameSettings(root) {
 
     const newCount = additions.size + customs.size;
     const n = edits.size + newCount;
+    const timing = timingPicker();
 
     openModal({
       title: n + " 件の設定を変更します",
-      lead: serverRunning
-        ? "ゲームサーバが稼働中です。このまま保存すると変更が失われます。"
-        : "上書き前に自動でバックアップを取ります。保存後、サーバを起動すると反映されます。",
+      lead: "反映するタイミングを選べます。予約しておけば、"
+          + "サーバ稼働中に入力しても指定のタイミングで自動的に反映されます。",
       danger: true,
-      confirmLabel: serverRunning ? "サーバ設定タブへ" : "保存する",
+      confirmLabel: "保存する",
       body: [
-        // Palworld は停止時に ini を上書きするので、稼働中の保存は無意味になる
-        serverRunning ? el("div", { class: "warnbox" }, [
-          el("div", { text: "Palworld は停止時に、メモリ上の設定で PalWorldSettings.ini を上書きします。" }),
-          el("div", { text: "稼働中に保存しても、次にサーバを停止した時点で書き戻されて消えます。" }),
-          el("div", { style: "margin-top:6px", text: "正しい手順: サーバを停止 → ここで保存 → サーバを起動" }),
-        ]) : null,
         newCount ? el("div", { class: "warnbox",
           text: newCount + " 件は設定ファイルに新しく書き足されます。"
               + "以降はゲーム側の既定値ではなく、ここで指定した値が使われます。" }) : null,
         list,
+        el("div", { style: "margin-top:14px" }, timing.nodes),
       ],
+      validate: timing.validate,
       async onConfirm() {
-        if (serverRunning) {
-          // 保存させず、停止導線へ送る（変更内容は破棄しない）
-          setView("settings");
-          toast("サーバを停止してから、ゲーム設定タブで保存してください", "err");
-          return;
-        }
         const values = {}, adds = {};
         for (const [name, value] of edits) values[name] = value;
         for (const [name, value] of additions) adds[name] = value;
         const custom_additions = Array.from(customs.values())
           .map(f => ({ name: f.name, type: f.type, value: f.value }));
 
-        const r = await put("/api/settings-ini/fields", { values, additions: adds, custom_additions });
+        const payload = Object.assign(
+          { values, additions: adds, custom_additions }, timing.payload());
+        const r = await put("/api/settings-ini/fields", payload);
+
         if (r.result === "unchanged") {
           toast("変更点がなかったため保存しませんでした");
+        } else if (r.result === "scheduled") {
+          toast("変更を予約しました。指定のタイミングで自動的に反映されます", "ok");
         } else {
           toast("保存しました（バックアップ: " + r.backup + "）。サーバを起動すると反映されます", "ok");
         }
@@ -1514,7 +1572,83 @@ function renderGameSettings(root) {
     });
   }
 
+  // 反映待ちの変更。ここに残っている間、設定ファイルはまだ書き換わっていない
+  function paintPending() {
+    clear(pendingBox);
+    if (!pendingItems.length) return;
+
+    const wrap = el("div", { class: "tablewrap" });
+    const table = el("table");
+    table.appendChild(el("thead", null, el("tr", null,
+      ["保存日時", "内容", "反映タイミング", "メモ", ""].map(h => el("th", { text: h })))));
+    const tbody = el("tbody");
+    for (const p of pendingItems) {
+      const keys = Object.entries(p.updates).map(([k, v]) => k + "=" + v);
+      tbody.appendChild(el("tr", null, [
+        el("td", { class: "small", text: fmtTime(p.created_at) }),
+        el("td", { class: "small", text: keys.join(", ") }),
+        el("td", null, [
+          el("div", { class: "small", text: p.target_label }),
+          p.next_action_at ? el("div", { class: "muted small", text: fmtTime(p.next_action_at) }) : null,
+          p.target_missing ? el("div", { class: "small",
+            style: "color:var(--warn)", text: "紐づけ先の予約が削除されています（次の停止時に反映）" }) : null,
+        ]),
+        el("td", { class: "muted small", text: p.note || "-" }),
+        el("td", null, el("button", {
+          class: "btn small danger", text: "取り消す",
+          onclick: () => openModal({
+            title: "予約した設定変更を取り消します",
+            lead: keys.join(", "),
+            danger: true,
+            confirmLabel: "取り消す",
+            async onConfirm() {
+              await del("/api/settings-ini/pending/" + p.id);
+              toast("取り消しました", "ok");
+              await load();
+            },
+          }),
+        })),
+      ]));
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+
+    pendingBox.appendChild(el("h2", { text: "反映待ちの変更（" + pendingItems.length + "）" }));
+    pendingBox.appendChild(el("div", { class: "muted small", style: "margin-bottom:8px",
+      text: "まだ設定ファイルには書き込まれていません。指定したタイミングでサーバが停止したときに、自動的に反映されます。" }));
+    pendingBox.appendChild(wrap);
+    if (!serverRunning) {
+      pendingBox.appendChild(el("div", { class: "row", style: "margin-top:8px" }, [
+        el("button", {
+          class: "btn", text: "今すぐ反映する",
+          onclick: () => openModal({
+            title: "反映待ちの変更を今すぐ反映します",
+            lead: "サーバが停止しているので、そのまま設定ファイルへ書き込めます。",
+            confirmLabel: "反映する",
+            async onConfirm() {
+              const r = await post("/api/settings-ini/pending/apply");
+              toast(r.applied + " 件を反映しました", "ok");
+              await load();
+            },
+          }),
+        }),
+        el("span", { class: "muted small", text: "サーバ停止中なので、待たずに反映できます" }),
+      ]));
+    }
+    pendingBox.appendChild(el("hr", { style: "border:0;border-top:1px solid var(--line);margin:18px 0" }));
+  }
+
   async function load() {
+    // 反映先の候補にするため、予約と保留中の変更も取っておく
+    try {
+      const [p, s] = await Promise.all([
+        api("/api/settings-ini/pending"),
+        api("/api/schedules"),
+      ]);
+      pendingItems = p.pending;
+      schedules = s.schedules;
+    } catch (e) { pendingItems = []; schedules = []; }
+
     let data;
     try { data = await api("/api/settings-ini/fields"); }
     catch (e) { pathInfo.textContent = "読み込みに失敗しました: " + e.message; return; }
@@ -1533,6 +1667,7 @@ function renderGameSettings(root) {
     serverRunning = !!data.server_running;
 
     clear(runningWarn);
+    paintPending();
 
     // アップデートで項目が増えると、稼働中サーバがこちらの知らないキーを返してくる。
     // 見逃さないよう明示的に知らせる
@@ -1548,14 +1683,16 @@ function renderGameSettings(root) {
     }
 
     if (serverRunning) {
-      runningWarn.appendChild(el("div", { class: "warnbox" }, [
-        el("strong", { text: "サーバ稼働中のため保存できません" }),
+      runningWarn.appendChild(el("div", { class: "infobox" }, [
+        el("strong", { text: "サーバ稼働中です。変更は予約して反映できます" }),
         el("div", { style: "margin-top:4px",
-          text: "Palworld は停止時に、メモリ上の設定で PalWorldSettings.ini を上書きします。"
-              + "稼働中に書き換えても次の停止で失われるため、保存はサーバ停止中のみ受け付けます。" }),
+          text: "Palworld は停止時に設定ファイルを上書きするため、稼働中の直接編集はできません。"
+              + "そのかわり、保存時に反映タイミングを選べます。"
+              + "予約しておけば、指定のタイミングでサーバが停止したときに自動で反映されます。" }),
         el("div", { class: "row", style: "margin-top:8px" }, [
-          el("span", { class: "muted small", text: "手順: サーバを停止 → ここで編集して保存 → サーバを起動" }),
+          el("span", { class: "muted small", text: "今すぐ反映したい場合はサーバを停止してください" }),
           el("button", { class: "btn small", text: "サーバ操作へ", onclick: () => setView("settings") }),
+          el("button", { class: "btn small", text: "スケジュールへ", onclick: () => setView("schedules") }),
         ]),
       ]));
     }
@@ -1810,7 +1947,8 @@ function renderSchedules(root) {
     const wrap = el("div", { class: "tablewrap" });
     const table = el("table");
     table.appendChild(el("thead", null, el("tr", null,
-      ["動作", "繰り返し", "指定", "メモ", "予告", "次回実行", "状態", ""].map(h => el("th", { text: h })))));
+      ["動作", "繰り返し", "指定", "メモ", "予告", "設定変更", "次回実行", "状態", ""]
+        .map(h => el("th", { text: h })))));
     const tbody = el("tbody");
     for (const s of data.schedules) {
       const offsets = s.notice_offsets && s.notice_offsets.length
@@ -1826,6 +1964,9 @@ function renderSchedules(root) {
               el("div", { class: "muted small", text: s.announce_message || "既定の文面" }),
             ])
           : el("td", { class: "muted small", text: "予告なし" }),
+        s.pending_changes
+          ? el("td", null, el("span", { class: "tag-added", text: s.pending_changes + " 件反映" }))
+          : el("td", { class: "muted small", text: "-" }),
         el("td", { text: fmtTime(s.next_action_at) }),
         el("td", { text: s.enabled ? "有効" : "無効", class: s.enabled ? "" : "muted" }),
         el("td", null, el("div", { class: "row" }, [
