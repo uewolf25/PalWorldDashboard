@@ -42,6 +42,13 @@ SECRET_KEY_ALLOW = (
     "APP_USER",
 )
 
+# 名前がこれで終わるものは「置き場所」であって秘密そのものではない。
+# 例: APP_SESSION_SECRET_FILE=/var/lib/.../session-secret
+#
+# 逃げ道にはならない。仮に MY_TOKEN_FILE=ghp_xxx と書いても、
+# 下のトークン検出（値の形で判別する方）で引っかかる
+LOCATION_SUFFIXES = ("_FILE", "_PATH", "_DIR", "_URL_FILE")
+
 # 見本として書いてよいプレースホルダ
 PLACEHOLDER_VALUES = {
     "", "changeme", "change_me", "CHANGE_ME", "CHANGEME",
@@ -100,6 +107,8 @@ def is_secret_key(key: str) -> bool:
     if key in SECRET_KEY_ALLOW:
         return False
     upper = key.upper()
+    if upper.endswith(LOCATION_SUFFIXES):
+        return False
     return any(hint in upper for hint in SECRET_KEY_HINTS)
 
 

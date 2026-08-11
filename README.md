@@ -126,6 +126,27 @@ daily / once は指定時刻ちょうどに動作するよう予告リードぶ�
 「この予約で反映」を選んで保存しておけば、枠の中で ini への書き込みまで自動的に行われる。
 人が張り付く必要はない。
 
+### ログイン
+
+`APP_PASSWORD` を設定すると管理画面にログインが必要になる（空なら無認証）。
+
+| 経路 | 認証方法 |
+|------|----------|
+| ブラウザ | ログイン画面 → セッション Cookie（HttpOnly / SameSite=Lax、HTTPS 時のみ Secure） |
+| curl・スクリプト | Basic 認証（`-u admin:PASS`） |
+| WebSocket（ログ画面） | Cookie。Basic 認証も受け付ける |
+
+- セッションは署名付きトークンで、サーバ側には保持しない。
+  署名鍵はファイルに永続化するので、**プロセスを再起動してもログインは切れない**
+- ログイン失敗が続いた接続元は一定時間受け付けない（既定 10 回 / 300 秒）
+- 401 に `WWW-Authenticate` を返さない。返すとブラウザ標準のダイアログが出て、
+  自前のログイン画面と二重になるため
+
+**Basic 認証だけだった頃、WebSocket が繋がらないことがあった。**
+ブラウザは WS のハンドシェイクに Basic 認証を付けないことがあり、
+ログインできていてもログ画面だけ動かない。Cookie は同一オリジンの
+WS ハンドシェイクにも送られるので、この問題は起きない。
+
 ### Discord 通知
 
 Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき。
@@ -173,12 +194,13 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── settings_ini.py  PalWorldSettings.ini の読み書きとバックアップ
 │   │   ├── settings_schema.py 各設定項目の型・範囲・カテゴリ定義
 │   │   ├── cache.py         ゲームサーバへの問い合わせを間引く TTL キャッシュ
+│   │   ├── auth.py          ログイン認証（セッション Cookie / Basic / 試行制限）
 │   │   ├── pending.py       設定変更の予約（保留中の変更）
 │   │   ├── logstream.py     ログの収集と WebSocket 配信
 │   │   ├── notify.py        Discord Webhook
 │   │   └── services.py      ゲームサーバのプロセス制御（systemd / 開発用モック）
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（325件）
+│   ├── tests/               pytest（372件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
@@ -358,6 +380,7 @@ mise run test
 | `test_check_secrets.py` | 秘密情報の検出漏れと誤検知、実際に起きた流出未遂ケース、対象外リストの肥大防止 |
 | `test_hardening.py` | 実機投入前に潰したリスク（タイムアウト分離、停止待ち、inode 保持、sudo、誤警報抑止、キャッシュ） |
 | `test_settings_form_js.py` | ゲーム設定フォームの入力挙動を node で実行して検証（入力中に要素が作り直されないこと） |
+| `test_auth.py` | トークンの偽造・期限切れ、Cookie の属性、ログアウト、総当たり制限、WebSocket 認証 |
 | `test_pending.py` | 稼働中の保存、停止シーケンスでの自動反映、予約への紐づけ、反映失敗時の復旧、永続化 |
 | `test_scheduler.py` | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
 | `test_monitor.py` | メトリクス記録、メモリ閾値アラートと cooldown、サーバ up/down 検知、ログ配信 |

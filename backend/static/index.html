@@ -172,6 +172,26 @@ textarea { width: 100%; min-height: 320px; font-family: ui-monospace, "SF Mono",
 
 canvas { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
 
+/* --- ログイン画面 --- */
+.login-screen {
+  display: none; position: fixed; inset: 0; z-index: 300;
+  background: var(--bg); align-items: center; justify-content: center; padding: 20px;
+}
+.login-screen.show { display: flex; }
+.login-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 32px 30px; width: 100%; max-width: 380px;
+  box-shadow: 0 24px 60px rgba(0,0,0,.45);
+}
+.login-brand { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+.login-lead { color: var(--muted); font-size: 13px; margin: 0 0 22px; }
+.login-label {
+  display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px;
+}
+#login-password { width: 100%; }
+.login-error { color: #ff9d9d; font-size: 12.5px; min-height: 1.4em; margin: 8px 0 4px; }
+.login-submit { width: 100%; margin-top: 6px; }
+
 .backdrop { display: none; }
 @media (max-width: 700px) {
   .layout { display: block; }
@@ -203,6 +223,17 @@ canvas { width: 100%; background: var(--panel); border: 1px solid var(--line); b
 </div>
 <div id="toast"></div>
 <div id="modal-root"></div>
+
+<div class="login-screen" id="login-screen">
+  <div class="login-card">
+    <div class="login-brand">Palworld Manager</div>
+    <p class="login-lead">管理画面を開くにはパスワードが必要です。</p>
+    <label class="login-label" for="login-password">パスワード</label>
+    <input type="password" id="login-password" autocomplete="current-password" autofocus>
+    <div class="login-error" id="login-error"></div>
+    <button class="btn primary login-submit" id="login-submit">ログイン</button>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -248,6 +279,13 @@ async function api(path, options) {
       detail = typeof body.detail === "string" ? body.detail
         // FastAPI のバリデーションエラーは配列で来る
         : body.detail.map(d => (d.loc ? d.loc[d.loc.length - 1] + ": " : "") + d.msg).join(" / ");
+    }
+    // セッション切れ。画面を触っている最中でもログインに戻す
+    if (resp.status === 401 && !path.startsWith("/api/login")) {
+      const err = new Error(detail);
+      err.unauthorized = true;
+      showLogin("セッションが切れました。もう一度ログインしてください。");
+      throw err;
     }
     throw new Error(detail);
   }
@@ -481,6 +519,59 @@ function openStartModal(onDone) {
 }
 
 // --------------------------------------------------------------------------
+// ログイン
+// --------------------------------------------------------------------------
+function showLogin(message) {
+  // 進行中の更新を止める。ログイン前に叩いても 401 になるだけ
+  if (state.refresher) { clearInterval(state.refresher); state.refresher = null; }
+  if (state.ws) { state.ws.close(); state.ws = null; }
+
+  const layout = document.querySelector ? null : null;
+  clear($("sidebar"));
+  clear($("view"));
+  showBanner("");
+  $("login-screen").classList.add("show");
+
+  const pw = $("login-password");
+  const err = $("login-error");
+  err.textContent = message || "";
+  pw.value = "";
+  pw.focus();
+}
+
+function hideLogin() {
+  $("login-screen").classList.remove("show");
+}
+
+async function submitLogin() {
+  const pw = $("login-password");
+  const err = $("login-error");
+  const btn = $("login-submit");
+  if (!pw.value) { err.textContent = "パスワードを入力してください"; return; }
+
+  btn.disabled = true;
+  try {
+    await post("/api/login", { password: pw.value });
+    pw.value = "";
+    err.textContent = "";
+    hideLogin();
+    await start();
+  } catch (e) {
+    err.textContent = e.message;
+    pw.select();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function logout() {
+  try { await post("/api/logout"); } catch (e) { /* 失敗してもログイン画面へ戻す */ }
+  state.config = null;
+  state.status = null;
+  showLogin("ログアウトしました。");
+}
+
+// --------------------------------------------------------------------------
 // 画面定義
 // --------------------------------------------------------------------------
 const VIEWS = [
@@ -530,6 +621,17 @@ function buildSidebar() {
     }));
   }
   bar.appendChild(el("div", { class: "spacer" }));
+  if (state.config && state.config.auth_required) {
+    bar.appendChild(el("button", {
+      class: "navbtn", text: "ログアウト", style: "color:var(--crit)",
+      onclick: () => openModal({
+        title: "ログアウトします",
+        lead: "再び操作するにはパスワードの入力が必要になります。",
+        confirmLabel: "ログアウト",
+        onConfirm: logout,
+      }),
+    }));
+  }
   const online = state.status ? state.status.online : null;
   bar.appendChild(el("div", { class: "muted", style: "padding:8px 12px;font-size:12px" }, [
     el("span", { class: "statusdot " + (online === null ? "" : online ? "online" : "offline") }),
@@ -2166,10 +2268,31 @@ $("backdrop").addEventListener("click", closeDrawer);
 // --------------------------------------------------------------------------
 // 起動
 // --------------------------------------------------------------------------
-(async function main() {
+async function start() {
   try { state.config = await api("/api/config"); }
-  catch (e) { toast("設定の取得に失敗しました: " + e.message, "err"); }
+  catch (e) {
+    if (e.unauthorized) return;   // ログイン画面が出ている
+    toast("設定の取得に失敗しました: " + e.message, "err");
+  }
   setView("dashboard");
+}
+
+(async function main() {
+  $("login-submit").addEventListener("click", submitLogin);
+  $("login-password").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") submitLogin();
+  });
+
+  let auth = { required: false, authenticated: true };
+  try { auth = await api("/api/auth/status"); }
+  catch (e) { /* 取れなければ認証なしとして進み、401 が出たらログインへ */ }
+
+  if (auth.required && !auth.authenticated) {
+    showLogin("");
+    return;
+  }
+  hideLogin();
+  await start();
 })();
 </script>
 </body>

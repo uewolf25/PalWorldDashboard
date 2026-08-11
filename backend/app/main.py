@@ -10,12 +10,22 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .announce import AnnouncementLog, Announcer
+from .auth import (
+    COOKIE_NAME,
+    LoginThrottle,
+    check_basic_header,
+    issue_token,
+    load_or_create_secret,
+    token_expiry,
+    verify_token,
+)
 from .cache import TTLCache
 from .config import Settings, load_settings
 from .logstream import BrokerLogHandler, LogBroker
@@ -149,6 +159,10 @@ class ServiceActionBody(BaseModel):
     reason: str = "手動"
 
 
+class LoginBody(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+
+
 # --------------------------------------------------------------------------
 # アプリ生成
 # --------------------------------------------------------------------------
@@ -184,6 +198,13 @@ def create_app(
         use_sudo=cfg.pal_systemctl_sudo,
     )
     ini_store = SettingsIniStore(cfg.pal_settings_ini, cfg.backup_dir, keep=cfg.backup_keep)
+    # ログインのセッション。鍵はファイルに永続化して、再起動でログインが
+    # 切れないようにする
+    session_secret = load_or_create_secret(cfg.session_secret_file, cfg.app_session_secret)
+    throttle = LoginThrottle(
+        max_attempts=cfg.app_login_max_attempts,
+        lockout=cfg.app_login_lockout_sec,
+    )
     monitor = Monitor(
         pal,
         notify,
@@ -304,6 +325,7 @@ def create_app(
     app.state.announcer = announcer
     app.state.announce_log = announce_log
     app.state.pending = pending
+    app.state.throttle = throttle
     app.state.status_cache = status_cache
     app.state.players_cache = players_cache
     app.state.restart = restart_manager
@@ -312,16 +334,32 @@ def create_app(
 
     _security = HTTPBasic(auto_error=False)
 
-    def require_auth(creds: HTTPBasicCredentials | None = Depends(_security)) -> None:
-        if not cfg.app_password:
-            return
+    def _session_ok(request: Request) -> bool:
+        token = request.cookies.get(COOKIE_NAME, "")
+        return verify_token(session_secret, token)
+
+    def _basic_ok(creds: HTTPBasicCredentials | None) -> bool:
         if creds is None:
-            raise HTTPException(401, "認証が必要です", headers={"WWW-Authenticate": "Basic"})
-        ok = secrets.compare_digest(creds.username, cfg.app_user) and secrets.compare_digest(
+            return False
+        return secrets.compare_digest(creds.username, cfg.app_user) and secrets.compare_digest(
             creds.password, cfg.app_password
         )
-        if not ok:
-            raise HTTPException(401, "認証に失敗しました", headers={"WWW-Authenticate": "Basic"})
+
+    def require_auth(
+        request: Request, creds: HTTPBasicCredentials | None = Depends(_security)
+    ) -> None:
+        """ログイン済みのセッション、または Basic 認証を通す。
+
+        ブラウザはログイン画面で Cookie を得る。curl やスクリプトからは
+        Basic 認証の方が扱いやすいので、そちらも受け付ける。
+        """
+        if not cfg.app_password:
+            return
+        if _session_ok(request) or _basic_ok(creds):
+            return
+        # WWW-Authenticate を返すとブラウザが標準ダイアログを出してしまい、
+        # 自前のログイン画面と二重になる。ここでは付けない
+        raise HTTPException(401, "ログインが必要です")
 
     auth = [Depends(require_auth)]
 
@@ -361,6 +399,67 @@ def create_app(
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    # ---- ログイン ------------------------------------------------------
+
+    def _client_key(request: Request) -> str:
+        return request.client.host if request.client else "unknown"
+
+    def _cookie_secure(request: Request) -> bool:
+        # リバースプロキシ越しの TLS も見る
+        forwarded = request.headers.get("x-forwarded-proto", "")
+        return request.url.scheme == "https" or forwarded.split(",")[0].strip() == "https"
+
+    @app.get("/api/auth/status")
+    async def auth_status(request: Request) -> dict[str, Any]:
+        """ログイン画面を出すかどうかを画面が判断するために使う。
+
+        ここだけは未認証で叩ける（認証が要るかどうかを知る手段が要るため）。
+        """
+        return {
+            "required": bool(cfg.app_password),
+            "authenticated": (not cfg.app_password) or _session_ok(request),
+        }
+
+    @app.post("/api/login")
+    async def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
+        if not cfg.app_password:
+            return {"result": "ok", "required": False}
+
+        key = _client_key(request)
+        wait = throttle.retry_after(key)
+        if wait > 0:
+            raise HTTPException(
+                429, f"ログインの試行が多すぎます。{int(wait)} 秒後にもう一度お試しください"
+            )
+
+        if not secrets.compare_digest(body.password, cfg.app_password):
+            locked = throttle.record_failure(key)
+            logger.warning("ログインに失敗しました (%s)", key)
+            if locked:
+                raise HTTPException(
+                    429, f"ログインの試行が多すぎます。{int(locked)} 秒後にもう一度お試しください"
+                )
+            raise HTTPException(401, "パスワードが違います")
+
+        throttle.record_success(key)
+        token = issue_token(session_secret, cfg.app_session_ttl)
+        response.set_cookie(
+            COOKIE_NAME,
+            token,
+            max_age=int(cfg.app_session_ttl),
+            httponly=True,           # JavaScript から読めないようにする
+            samesite="lax",
+            secure=_cookie_secure(request),
+            path="/",
+        )
+        logger.info("ログインしました (%s)", key)
+        return {"result": "ok", "expires_at": token_expiry(token)}
+
+    @app.post("/api/logout")
+    async def logout(response: Response) -> dict[str, str]:
+        response.delete_cookie(COOKIE_NAME, path="/")
+        return {"result": "ok"}
 
     # ---- 基本情報 ------------------------------------------------------
 
@@ -869,10 +968,14 @@ def create_app(
     @app.websocket("/ws/logs")
     async def ws_logs(websocket: WebSocket) -> None:
         if cfg.app_password:
-            # WebSocket では Basic 認証ダイアログが使えないので、
-            # ブラウザが自動付与する Authorization ヘッダを検証する
-            header = websocket.headers.get("authorization", "")
-            if not _check_basic_header(header, cfg.app_user, cfg.app_password):
+            # Cookie は同一オリジンの WebSocket ハンドシェイクにも送られる。
+            # Basic 認証だとブラウザがヘッダを付けないことがあり、
+            # ログイン画面が動いていてもログだけ繋がらなかった
+            ok = verify_token(session_secret, websocket.cookies.get(COOKIE_NAME, ""))
+            if not ok:
+                header = websocket.headers.get("authorization", "")
+                ok = check_basic_header(header, cfg.app_user, cfg.app_password)
+            if not ok:
                 await websocket.close(code=1008)
                 return
         await websocket.accept()
@@ -885,19 +988,6 @@ def create_app(
             pass
 
     return app
-
-
-def _check_basic_header(header: str, user: str, password: str) -> bool:
-    import base64
-
-    if not header.lower().startswith("basic "):
-        return False
-    try:
-        decoded = base64.b64decode(header.split(" ", 1)[1]).decode()
-        got_user, _, got_pass = decoded.partition(":")
-    except (ValueError, UnicodeDecodeError):
-        return False
-    return secrets.compare_digest(got_user, user) and secrets.compare_digest(got_pass, password)
 
 
 app = create_app()

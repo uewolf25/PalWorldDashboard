@@ -204,3 +204,30 @@ def test_repository_is_clean():
     root = _SCRIPT.parents[1]
     findings = check_secrets.scan(root, check_secrets.tracked_files(root))
     assert findings == [], "\n".join(str(f) for f in findings)
+
+
+# ---- 置き場所を指す変数（誤検知の修正） ------------------------------------
+
+
+@pytest.mark.parametrize("line", [
+    "APP_SESSION_SECRET_FILE=/var/lib/dashboard-Pal/session-secret",
+    "PAL_ANNOUNCE_STORE=/var/lib/dashboard-Pal/announcements.json",
+    "TLS_KEY_PATH=/etc/ssl/private/server.key",
+    "TOKEN_DIR=/var/run/tokens",
+])
+def test_location_variables_are_not_secrets(tmp_path, line):
+    """名前に SECRET や KEY が入っていても、指しているのは場所であって値ではない。"""
+    rel = write(tmp_path, "x.env.example", line + "\n")
+    findings = [f for f in check_secrets.scan(tmp_path, [rel]) if f.kind == "見本に実値"]
+    assert findings == [], f"誤検知: {line}"
+
+
+def test_location_suffix_is_not_an_escape_hatch(tmp_path):
+    """_FILE を付ければ何でも書けるわけではない。
+
+    キー名では見逃しても、値の形でトークンと分かるものは止める。
+    """
+    rel = write(tmp_path, "x.env.example",
+                "MY_TOKEN_FILE=ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8\n")
+    findings = check_secrets.scan(tmp_path, [rel])
+    assert any(f.kind == "トークン検出" for f in findings)

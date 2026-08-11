@@ -71,9 +71,29 @@ class Settings:
     # --- この管理ツール自身 ---
     app_host: str = field(default_factory=lambda: _env("APP_HOST", "0.0.0.0"))
     app_port: int = field(default_factory=lambda: _env_int("APP_PORT", 8080))
-    # 設定すると管理 UI / API に Basic 認証がかかる（未設定なら無認証）
+    # 設定すると管理画面にログインが必要になる（未設定なら無認証）。
+    # ブラウザはログイン画面 + セッション Cookie、API クライアントは Basic 認証
     app_password: str = field(default_factory=lambda: _env("APP_PASSWORD", ""))
     app_user: str = field(default_factory=lambda: _env("APP_USER", "admin"))
+    # セッションの署名鍵。未設定なら生成してファイルに保存する
+    # （毎回作り直すと再起動のたびに全員ログアウトになる）
+    app_session_secret: str = field(default_factory=lambda: _env("APP_SESSION_SECRET", ""))
+    session_secret_file: Path = field(
+        default_factory=lambda: Path(
+            _env("APP_SESSION_SECRET_FILE", "/var/lib/dashboard-Pal/session-secret")
+        )
+    )
+    # ログイン状態を保つ時間（秒）。既定は7日
+    app_session_ttl: float = field(
+        default_factory=lambda: _env_float("APP_SESSION_TTL", 604800.0)
+    )
+    # ログイン失敗が続いたときに一時的に受け付けなくする
+    app_login_max_attempts: int = field(
+        default_factory=lambda: _env_int("APP_LOGIN_MAX_ATTEMPTS", 10)
+    )
+    app_login_lockout_sec: float = field(
+        default_factory=lambda: _env_float("APP_LOGIN_LOCKOUT_SEC", 300.0)
+    )
 
     # --- ゲームサーバのプロセス制御 ---
     pal_service_name: str = field(
@@ -231,6 +251,7 @@ class Settings:
             "mem_crit_percent": self.mem_crit_percent,
             "discord_webhook_url": mask_secret(self.discord_webhook_url),
             "discord_alert_webhook_url": mask_secret(self.discord_alert_webhook_url),
+            "auth_required": bool(self.app_password),
             "log_source": self.log_source,
             "dry_run": self.dry_run,
         }
