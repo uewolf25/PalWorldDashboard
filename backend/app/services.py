@@ -177,6 +177,48 @@ class MockGameService:
             return None
 
 
+class SimulatedService:
+    """何もせず成功を返す（テストと動作確認用）。
+
+    systemd バックエンドはホストに systemctl があるかどうかで挙動が変わるため、
+    再起動シーケンスそのものを検証したいテストでは結果が環境に左右される。
+    ここを明示的に選べるようにして、その揺れを断つ。
+
+    `dry_run` でも似たことはできるが、あちらはキックや BAN も止めてしまうので
+    「サーバのプロセス制御だけを空回しにしたい」用途には使えない。
+    """
+
+    def __init__(self, unit: str = "") -> None:
+        self.unit = unit
+        self._running = True
+
+    async def _result(self, action: str) -> CommandResult:
+        return CommandResult(
+            ok=True, returncode=0, stdout=f"[simulated] {action} {self.unit}".strip(),
+            stderr="", simulated=True,
+        )
+
+    async def start(self) -> CommandResult:
+        self._running = True
+        return await self._result("start")
+
+    async def stop(self) -> CommandResult:
+        self._running = False
+        return await self._result("stop")
+
+    async def restart(self) -> CommandResult:
+        self._running = True
+        return await self._result("restart")
+
+    async def is_active(self) -> bool | None:
+        # 実行できていないので「分からない」を返す。
+        # 稼働判定は REST API の到達性に委ねる
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
 def build_service(
     backend: str,
     *,
@@ -187,4 +229,7 @@ def build_service(
     if backend == "mock":
         logger.info("ゲームサーバの制御にモックバックエンドを使います: %s", mock_control_url)
         return MockGameService(mock_control_url)
+    if backend == "simulated":
+        logger.info("ゲームサーバの制御を空回しします（simulated）")
+        return SimulatedService(unit)
     return SystemdService(unit, dry_run=dry_run)

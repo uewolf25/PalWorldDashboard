@@ -10,7 +10,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.services import MockGameService, SystemdService, build_service
+from app.services import MockGameService, SimulatedService, SystemdService, build_service
 from mock import mock_palworld
 
 
@@ -105,15 +105,29 @@ async def test_systemd_is_simulated_without_systemctl():
     assert await service.is_active() is None
 
 
-def test_build_service_selects_backend():
-    assert isinstance(
-        build_service("mock", unit="x.service", dry_run=False, mock_control_url="http://h"),
-        MockGameService,
-    )
-    assert isinstance(
-        build_service("systemd", unit="x.service", dry_run=False, mock_control_url="http://h"),
-        SystemdService,
-    )
+@pytest.mark.parametrize("backend,expected", [
+    ("mock", MockGameService),
+    ("simulated", SimulatedService),
+    ("systemd", SystemdService),
+    ("", SystemdService),          # 未指定は systemd
+])
+def test_build_service_selects_backend(backend, expected):
+    service = build_service(backend, unit="x.service", dry_run=False, mock_control_url="http://h")
+    assert isinstance(service, expected)
+
+
+async def test_simulated_service_never_touches_the_host():
+    """ホストに systemctl があってもなくても同じ結果になること。
+
+    これが無いと、systemctl のある Linux（CI）と無い macOS で
+    再起動シーケンスのテスト結果が変わる。
+    """
+    service = SimulatedService("palworld.service")
+    for action in (service.start, service.stop, service.restart):
+        result = await action()
+        assert result.ok is True
+        assert result.simulated is True
+    assert await service.is_active() is None
 
 
 # ---- 停止シーケンス → 設定編集 という一連の流れ -----------------------------

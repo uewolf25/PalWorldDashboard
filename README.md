@@ -173,7 +173,7 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── notify.py        Discord Webhook
 │   │   └── services.py      ゲームサーバのプロセス制御（systemd / 開発用モック）
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（275件）
+│   ├── tests/               pytest（279件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
