@@ -28,7 +28,7 @@ from .restart import (
     RestartValidationError,
 )
 from .scheduler import RestartScheduler, ScheduleError
-from .services import SystemdService
+from .services import build_service
 from .settings_ini import SettingsIniError, SettingsIniStore
 from .settings_schema import (
     CATEGORIES,
@@ -156,7 +156,12 @@ def create_app(
         timeout=cfg.pal_timeout,
     )
     notify = notifier or DiscordNotifier(cfg.discord_webhook_url, cfg.discord_alert_webhook_url)
-    service = SystemdService(cfg.pal_service_name, dry_run=cfg.dry_run)
+    service = build_service(
+        cfg.pal_service_backend,
+        unit=cfg.pal_service_name,
+        dry_run=cfg.dry_run,
+        mock_control_url=cfg.pal_mock_control_url,
+    )
     ini_store = SettingsIniStore(cfg.pal_settings_ini, cfg.backup_dir, keep=cfg.backup_keep)
     monitor = Monitor(
         pal,
@@ -221,6 +226,7 @@ def create_app(
             app_logger.setLevel(previous_level)
             await pal.aclose()
             await notify.aclose()
+            await service.aclose()
 
     app = FastAPI(title="Palworld Server Manager", version="0.1.0", lifespan=lifespan)
 
@@ -264,12 +270,9 @@ def create_app(
             return True
         except PalApiError:
             pass
-        result = await service._run("is-active", service.unit)
-        if result.simulated:
-            # systemctl が無い環境（開発機）では判定材料が無いので、
-            # REST API の結果だけを信じる
-            return False
-        return result.stdout.strip() == "active"
+        # REST API が無効な構成もあるので、プロセス側にも聞く。
+        # 判定できない場合（None）は停止扱いにする — 保存を過剰に止めないため。
+        return bool(await service.is_active())
 
     @app.exception_handler(PalApiError)
     async def _pal_error_handler(request: Request, exc: PalApiError) -> JSONResponse:

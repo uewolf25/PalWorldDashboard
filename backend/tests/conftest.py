@@ -49,9 +49,8 @@ def server_stopped(mock_state):
 
     Palworld は停止時にメモリ上の設定で ini を上書きするため、
     設定ファイルの書き換えは停止中しか許可されない。
-    停止＝REST API に到達できない、として再現する。
     """
-    mock_state.fail_all = True
+    mock_state.running = False
     return mock_state
 
 

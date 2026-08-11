@@ -127,9 +127,9 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── settings_schema.py 各設定項目の型・範囲・カテゴリ定義
 │   │   ├── logstream.py     ログの収集と WebSocket 配信
 │   │   ├── notify.py        Discord Webhook
-│   │   └── services.py      systemd ユニット操作
+│   │   └── services.py      ゲームサーバのプロセス制御（systemd / 開発用モック）
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（174件）
+│   ├── tests/               pytest（186件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
@@ -172,6 +172,11 @@ curl -XPOST 'http://127.0.0.1:8212/__mock__/fail?fail_all=true'   # サーバ応
 curl -XPOST 'http://127.0.0.1:8212/__mock__/fail?fail_save=true'  # ワールド保存だけ失敗させる
 curl -XPOST 'http://127.0.0.1:8212/__mock__/fps?value=12'  # FPS を固定
 curl -XPOST http://127.0.0.1:8212/__mock__/reset           # 初期状態に戻す
+
+# サーバの起動/停止（systemctl 相当。停止中でも制御できる）
+curl     http://127.0.0.1:8212/__mock__/status
+curl -XPOST http://127.0.0.1:8212/__mock__/stop
+curl -XPOST http://127.0.0.1:8212/__mock__/start
 
 # アップデートで新プロパティが増えた状況を再現（項目発見の確認用）
 curl -XPOST http://127.0.0.1:8212/__mock__/settings \
@@ -267,6 +272,7 @@ mise run test
 | `test_dashboard.py` | ステータス、プレイヤー一覧、キック/BAN/UNBAN、ワールド、履歴、Basic 認証、秘密情報の伏字化 |
 | `test_restart.py` | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、アナウンス必須化、停止シーケンス、Discord の流量 |
 | `test_announce.py` | アナウンス履歴の記録・永続化・上限・フィルタ、送信失敗の記録、サービス操作 |
+| `test_services.py` | モックの稼働状態、起動/停止の反映、到達不能時の判定、停止→編集→起動の一連の流れ |
 | `test_settings_ini.py` | ini のパース（引用符内カンマ含む）、更新、バックアップ、復元、不正な内容の拒否、パストラバーサル防止 |
 | `test_settings_schema.py` | 項目の型解釈と書式化、未知キーの型推論、範囲/選択肢の検証、フォーム経由の更新 |
 | `test_scheduler.py` | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |

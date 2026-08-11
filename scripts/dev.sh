@@ -38,6 +38,10 @@ export PAL_ADMIN_PASSWORD=mockpass
 export APP_HOST=127.0.0.1
 export APP_PORT=8080
 export APP_PASSWORD=
+# systemctl が無いので、モックサーバ自体を起動/停止するバックエンドを使う。
+# これがないと「停止」しても停止扱いにならず、設定ファイルの編集を試せない
+export PAL_SERVICE_BACKEND=mock
+export PAL_MOCK_CONTROL_URL=http://127.0.0.1:8212
 export PAL_SETTINGS_INI="$DEV/PalWorldSettings.ini"
 export PAL_BACKUP_DIR="$DEV/backups"
 export PAL_SCHEDULE_STORE="$DEV/schedules.json"

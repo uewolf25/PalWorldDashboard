@@ -1533,6 +1533,20 @@ function renderGameSettings(root) {
     serverRunning = !!data.server_running;
 
     clear(runningWarn);
+
+    // アップデートで項目が増えると、稼働中サーバがこちらの知らないキーを返してくる。
+    // 見逃さないよう明示的に知らせる
+    if (discovered.length) {
+      runningWarn.appendChild(el("div", { class: "infobox", style: "margin-bottom:10px" }, [
+        el("strong", { text: "この管理ツールが知らない設定項目が " + discovered.length + " 件見つかりました" }),
+        el("div", { class: "small", style: "margin-top:4px",
+          text: "稼働中のサーバは持っているのに、設定ファイルにも項目一覧にも無いものです。"
+              + "Palworld のアップデートで増えた可能性があります。「未設定の項目」から追加できます。" }),
+        el("div", { class: "muted small", style: "margin-top:4px",
+          text: discovered.map(f => f.name).join(", ") }),
+      ]));
+    }
+
     if (serverRunning) {
       runningWarn.appendChild(el("div", { class: "warnbox" }, [
         el("strong", { text: "サーバ稼働中のため保存できません" }),
