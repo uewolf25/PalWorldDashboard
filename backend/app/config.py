@@ -141,6 +141,14 @@ class Settings:
         default_factory=lambda: _env_int("ANNOUNCE_HISTORY_LIMIT", 500)
     )
 
+    # --- 設定変更の予約（保留中の変更） ---
+    pending_store: Path = field(
+        default_factory=lambda: Path(
+            _env("PAL_PENDING_STORE", "/var/lib/dashboard-Pal/pending-settings.json")
+        )
+    )
+    pending_limit: int = field(default_factory=lambda: _env_int("PAL_PENDING_LIMIT", 50))
+
     # --- 監視 ---
     monitor_interval: float = field(default_factory=lambda: _env_float("MONITOR_INTERVAL", 30.0))
     history_size: int = field(default_factory=lambda: _env_int("HISTORY_SIZE", 2880))

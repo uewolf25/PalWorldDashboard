@@ -7,7 +7,7 @@ import logging
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
@@ -21,6 +21,7 @@ from .logstream import BrokerLogHandler, LogBroker
 from .monitor import Monitor
 from .notify import DiscordNotifier
 from .palapi import PalApiError, PalworldClient
+from .pending import ApplyResult, PendingChangeStore
 from .restart import (
     RestartDebounced,
     RestartInProgress,
@@ -107,6 +108,14 @@ class SettingsFieldsBody(BaseModel):
     custom_additions: list[CustomFieldBody] = Field(default_factory=list)
     force: bool = False
 
+    # いつ反映するか
+    #   now       : すぐ ini に書く（サーバ停止中のみ）
+    #   next_stop : 次にサーバが停止したときに反映（予約・手動どちらでも）
+    #   schedule  : 指定した予約のときに反映
+    when: Literal["now", "next_stop", "schedule"] = "now"
+    schedule_id: str | None = None
+    note: str = ""
+
 
 class ScheduleBody(BaseModel):
     """サーバ状態変更の予約。
@@ -183,6 +192,34 @@ def create_app(
     )
     announce_log = AnnouncementLog(cfg.announce_store, limit=cfg.announce_history_limit)
     announcer = Announcer(pal, notify, announce_log)
+    pending = PendingChangeStore(cfg.pending_store, limit=cfg.pending_limit)
+
+    async def apply_pending_changes(schedule_id: str | None) -> ApplyResult:
+        """サーバ停止中に呼ばれ、保留していた設定変更を ini へ書き込む。
+
+        失敗しても例外は投げない。呼び出し側（停止シーケンス）は
+        この結果に関わらずサーバを起動し直す必要がある。
+        """
+        items = pending.due_for(schedule_id)
+        if not items:
+            return ApplyResult(ok=True)
+
+        updates = pending.merged(items)
+        try:
+            backup = ini_store.update_options(updates)
+        except SettingsIniError as exc:
+            logger.warning("保留中の設定変更を反映できませんでした: %s", exc)
+            # 保留は消さない。次の停止機会に再試行する
+            return ApplyResult(ok=False, keys=sorted(updates), error=str(exc))
+
+        pending.remove_many([i.id for i in items])
+        return ApplyResult(
+            ok=True,
+            applied_ids=[i.id for i in items],
+            keys=sorted(updates),
+            backup=backup.name,
+        )
+
     restart_manager = RestartManager(
         pal,
         announcer,
@@ -191,6 +228,8 @@ def create_app(
         announce_template=cfg.restart_announce_template,
         debounce_sec=cfg.restart_debounce_sec,
         shutdown_waittime=cfg.restart_shutdown_wait,
+        apply_pending=apply_pending_changes,
+        count_pending=lambda sid: len(pending.due_for(sid)),
     )
     scheduler = ServerScheduler(
         restart_manager,
@@ -250,6 +289,7 @@ def create_app(
     app.state.monitor = monitor
     app.state.announcer = announcer
     app.state.announce_log = announce_log
+    app.state.pending = pending
     app.state.restart = restart_manager
     app.state.scheduler = scheduler
     app.state.broker = broker
@@ -590,6 +630,8 @@ def create_app(
             "category_labels": [{"key": k, "label": v} for k, v in CATEGORIES],
             # ini はサーバ停止中でないと安全に書き換えられない
             "server_running": await game_server_running(),
+            # 反映待ちの変更（稼働中でも保存できるのはこの仕組みがあるため）
+            "pending_total": len(pending),
         }
 
     @app.put("/api/settings-ini/fields", dependencies=auth)
@@ -601,14 +643,23 @@ def create_app(
         if not body.values and not body.additions and not body.custom_additions:
             raise HTTPException(400, "更新する項目がありません")
 
-        # Palworld は停止時に、メモリ上の設定で PalWorldSettings.ini を上書きする。
-        # 稼働中に書き換えても次の停止で消えるので、既定では止める。
-        if not body.force and await game_server_running():
+        schedule_id: str | None = None
+        if body.when == "schedule":
+            if not body.schedule_id:
+                raise HTTPException(400, "反映先の予約を指定してください")
+            if not any(s["id"] == body.schedule_id for s in scheduler.list()):
+                raise HTTPException(404, f"予約が見つかりません: {body.schedule_id}")
+            schedule_id = body.schedule_id
+
+        # すぐ反映する場合だけ、稼働中かどうかを気にする。
+        # Palworld は停止時に ini を上書きするので、稼働中に書いても消えるため。
+        # 予約して反映する場合は ini に触らないので、稼働中でも受け付ける。
+        if body.when == "now" and not body.force and await game_server_running():
             raise HTTPException(
                 409,
                 "ゲームサーバが稼働中です。Palworld は停止時に ini を上書きするため、"
                 "稼働中に書き換えても次の停止で失われます。"
-                "サーバを停止してから保存してください。",
+                "サーバを停止してから保存するか、反映タイミングを予約してください。",
             )
 
         options = ini_store.read_options()
@@ -626,16 +677,45 @@ def create_app(
         changed = {k: v for k, v in updates.items() if options.get(k) != v}
         changed.update(added)
         if not changed:
-            return {"result": "unchanged", "changed": {}, "added": [], "restart_required": False}
+            return {"result": "unchanged", "changed": {}, "added": [], "start_required": False}
 
+        detail = "変更: " + ", ".join(f"{k}={v}" for k, v in changed.items())
+        if added:
+            detail += "\n（うち新規追加: " + ", ".join(added) + "）"
+
+        # --- 予約して反映する ---
+        if body.when != "now":
+            try:
+                item = pending.add(changed, schedule_id=schedule_id, note=body.note)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
+            target = "次にサーバが停止するとき"
+            if schedule_id:
+                sched = next((s for s in scheduler.list() if s["id"] == schedule_id), None)
+                if sched:
+                    target = f"予約「{sched['label'] or sched['spec']}」（{sched['action_label']}）"
+            await notify.send(
+                "サーバ設定の変更を予約しました",
+                detail + f"\n反映タイミング: {target}",
+                "info",
+            )
+            return {
+                "result": "scheduled",
+                "pending_id": item.id,
+                "changed": changed,
+                "added": sorted(added),
+                "when": body.when,
+                "schedule_id": schedule_id,
+                "pending_total": len(pending),
+            }
+
+        # --- すぐ反映する（サーバ停止中） ---
         try:
             backup = ini_store.update_options(changed)
         except SettingsIniError as exc:
             raise HTTPException(400, str(exc)) from exc
 
-        detail = "変更: " + ", ".join(f"{k}={v}" for k, v in changed.items())
-        if added:
-            detail += "\n（うち新規追加: " + ", ".join(added) + "）"
         await notify.send(
             "サーバ設定を更新しました",
             detail + f"\nバックアップ: {backup.name}\nサーバを起動すると反映されます。",
@@ -650,6 +730,52 @@ def create_app(
             "start_required": True,
         }
 
+    # ---- 保留中の設定変更 ------------------------------------------------
+
+    @app.get("/api/settings-ini/pending", dependencies=auth)
+    async def list_pending() -> dict[str, Any]:
+        """反映待ちの設定変更。どの予約で反映されるかも併せて返す。"""
+        schedules = {s["id"]: s for s in scheduler.list()}
+        items = []
+        for item in pending.list():
+            sched = schedules.get(item["schedule_id"]) if item["schedule_id"] else None
+            items.append(
+                {
+                    **item,
+                    "target_label": (
+                        f"{sched['label'] or sched['spec']}（{sched['action_label']}）"
+                        if sched else "次にサーバが停止するとき"
+                    ),
+                    # 紐づけ先の予約が消えていたら、次の停止で反映される
+                    "target_missing": bool(item["schedule_id"]) and sched is None,
+                    "next_action_at": sched["next_action_at"] if sched else None,
+                }
+            )
+        return {"pending": items, "total": len(pending)}
+
+    @app.delete("/api/settings-ini/pending/{change_id}", dependencies=auth)
+    async def cancel_pending(change_id: str) -> dict[str, str]:
+        if not pending.remove(change_id):
+            raise HTTPException(404, f"保留中の変更が見つかりません: {change_id}")
+        return {"result": "ok"}
+
+    @app.delete("/api/settings-ini/pending", dependencies=auth)
+    async def clear_pending() -> dict[str, int]:
+        return {"cleared": pending.clear()}
+
+    @app.post("/api/settings-ini/pending/apply", dependencies=auth)
+    async def apply_pending_now() -> dict[str, Any]:
+        """保留中の変更を今すぐ反映する（サーバ停止中のみ）。"""
+        if await game_server_running():
+            raise HTTPException(
+                409,
+                "ゲームサーバが稼働中です。反映はサーバ停止中にのみ行えます。",
+            )
+        result = await apply_pending_changes(None)
+        if not result.ok:
+            raise HTTPException(400, result.error)
+        return result.as_dict()
+
     @app.post("/api/settings-ini/restore", dependencies=auth)
     async def restore_ini(body: RestoreBody) -> dict[str, Any]:
         try:
@@ -662,10 +788,17 @@ def create_app(
 
     @app.get("/api/schedules", dependencies=auth)
     async def list_schedules() -> dict[str, Any]:
+        schedules = scheduler.list()
+        # この予約で反映される設定変更の件数を添える
+        for sched in schedules:
+            sched["pending_changes"] = (
+                len(pending.due_for(sched["id"])) if sched["action"] != "start" else 0
+            )
         return {
-            "schedules": scheduler.list(),
+            "schedules": schedules,
             "timezone": cfg.schedule_timezone,
             "actions": [{"value": a, "label": ACTION_LABELS[a]} for a in ACTIONS],
+            "pending_total": len(pending),
         }
 
     @app.post("/api/schedules", dependencies=auth)

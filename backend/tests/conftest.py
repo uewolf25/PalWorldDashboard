@@ -71,6 +71,7 @@ def settings(tmp_path: Path, ini_path: Path) -> Settings:
         backup_dir=tmp_path / "backups",
         schedule_store=tmp_path / "schedules.json",
         announce_store=tmp_path / "announcements.json",
+        pending_store=tmp_path / "pending.json",
         schedule_timezone="Asia/Tokyo",
         # テストでは待ち時間を潰す
         restart_notice_offsets="0.06,0.03,0.01",
