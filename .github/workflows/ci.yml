@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 読み取りだけで足りる
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: 秘密情報チェック
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # フックを回避してコミットされた場合の最後の砦なので、
+      # ステージ差分ではなく追跡ファイル全体を見る
+      - name: 追跡ファイル全体を走査
+        run: python3 scripts/check_secrets.py
+
+  test:
+    name: テスト
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 依存をインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements-dev.txt
+
+      - name: pytest
+        working-directory: backend
+        run: pytest -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: フロントエンドの JS を構文チェック
+        run: |
+          python3 - <<'PY'
+          import re, pathlib, subprocess, sys, tempfile
+          html = pathlib.Path("backend/static/index.html").read_text()
+          js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
+          with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+              fh.write(js)
+              path = fh.name
+          sys.exit(subprocess.run(["node", "--check", path]).returncode)
+          PY

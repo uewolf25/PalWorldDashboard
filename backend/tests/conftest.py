@@ -73,6 +73,12 @@ def settings(tmp_path: Path, ini_path: Path) -> Settings:
         announce_store=tmp_path / "announcements.json",
         pending_store=tmp_path / "pending.json",
         schedule_timezone="Asia/Tokyo",
+        # ホストに systemctl があるかどうかでテスト結果が変わらないようにする。
+        # 既定の systemd バックエンドのままだと、systemctl のある Linux（CI など）で
+        # 実際に `systemctl restart palworld.service` が走って失敗し、
+        # 再起動シーケンスが phase=failed になる。macOS では systemctl が無く
+        # 自動的に simulated へ落ちるので、この差が手元では出ない。
+        pal_service_backend="simulated",
         # テストでは待ち時間を潰す
         restart_notice_offsets="0.06,0.03,0.01",
         restart_shutdown_wait=0,
