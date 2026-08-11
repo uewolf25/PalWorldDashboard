@@ -173,10 +173,13 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── notify.py        Discord Webhook
 │   │   └── services.py      ゲームサーバのプロセス制御（systemd / 開発用モック）
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（224件）
+│   ├── tests/               pytest（275件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
+├── scripts/check_secrets.py 秘密情報の混入チェック
+├── .githooks/pre-commit     コミット前に上記を走らせる
+├── .github/workflows/ci.yml CI（秘密情報 + テスト + JS 構文）
 ├── dashboard-Pal.env.example
 └── dashboard-Pal.service
 ```
@@ -199,6 +202,7 @@ mise run dev    # モックサーバ + 管理ツールを起動
 | `mise run dev` | モック Palworld API と管理ツールを起動 |
 | `mise run test` | pytest |
 | `mise run checkjs` | フロントエンドの JS を `node --check` で構文チェック |
+| `mise run check-secrets` | 秘密情報が混入していないか走査 |
 
 `mise.toml` の `_.python.venv` で venv が自動有効化されるので、
 このディレクトリ内では `.venv/bin/` を書かずに `pytest` や `uvicorn` を叩ける。
@@ -306,6 +310,18 @@ curl -XPUT http://127.0.0.1:8080/api/settings-ini/fields \
 Webhook URL やパスワードを書くとそのままリポジトリに載る。
 値の要る場所は `.dev/local.env` か `/etc/dashboard-Pal.env` のどちらかしかない。
 
+これは注意書きではなく**仕組みで止めている**。`mise run setup` が
+`core.hooksPath=.githooks` を設定し、コミット前に `scripts/check_secrets.py` が走る。
+
+| 検査 | 内容 |
+|------|------|
+| 見本の空値ルール | `*.env.example` の `PASSWORD` / `TOKEN` / `WEBHOOK` / `SECRET` を含むキーに値が入っていたら弾く |
+| トークン検出 | 追跡ファイル全体から Discord Webhook・Bot Token、GitHub、AWS、Slack、秘密鍵を探す |
+
+フックを `--no-verify` で回避されても CI（GitHub Actions）が追跡ファイル全体を走査する。
+対象外にしているのは検出パターンの定義とその試験の2ファイルだけで、
+増えていないことをテストで見張っている。
+
 ```bash
 # 開発用の秘密情報を置く（.dev/ は .gitignore 済み）
 cat > .dev/local.env <<'EOF'
@@ -334,6 +350,7 @@ mise run test
 | `test_services.py` | モックの稼働状態、起動/停止の反映、到達不能時の判定、停止→編集→起動の一連の流れ |
 | `test_settings_ini.py` | ini のパース（引用符内カンマ含む）、更新、バックアップ、復元、不正な内容の拒否、パストラバーサル防止 |
 | `test_settings_schema.py` | 項目の型解釈と書式化、未知キーの型推論、範囲/選択肢の検証、フォーム経由の更新 |
+| `test_check_secrets.py` | 秘密情報の検出漏れと誤検知、実際に起きた流出未遂ケース、対象外リストの肥大防止 |
 | `test_pending.py` | 稼働中の保存、停止シーケンスでの自動反映、予約への紐づけ、反映失敗時の復旧、永続化 |
 | `test_scheduler.py` | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
 | `test_monitor.py` | メトリクス記録、メモリ閾値アラートと cooldown、サーバ up/down 検知、ログ配信 |
