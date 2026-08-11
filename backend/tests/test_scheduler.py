@@ -13,6 +13,13 @@ ANNOUNCE = {
 }
 
 
+# scheduler.add() を直接呼ぶとき用（API 経由ではない）
+ANNOUNCE_KW = {
+    "announce_message": ANNOUNCE["announce_message"],
+    "notice_offsets": ANNOUNCE["notice_offsets"],
+}
+
+
 def schedule_body(**overrides):
     body = dict(ANNOUNCE)
     body.update(overrides)
@@ -140,14 +147,18 @@ async def test_daily_job_fires_before_target_time(settings, pal_client, notifier
     app = create_app(settings, pal_client=pal_client, notifier=notifier, start_background=False)
     app.state.scheduler.start()
     try:
-        created = app.state.scheduler.add("daily", "04:00")
+        created = app.state.scheduler.add(
+            "daily", "04:00",
+            announce_message="{time}後に再起動します",
+            notice_offsets=[300, 60, 30],
+        )
         entry = next(e for e in app.state.scheduler.list() if e["id"] == created["id"])
 
         fire = datetime.fromisoformat(entry["next_fire_at"])
-        restart = datetime.fromisoformat(entry["next_restart_at"])
+        action_at = datetime.fromisoformat(entry["next_action_at"])
 
         assert (fire.hour, fire.minute) == (3, 55)
-        assert (restart.hour, restart.minute) == (4, 0)
+        assert (action_at.hour, action_at.minute) == (4, 0)
     finally:
         app.state.scheduler.shutdown()
 
@@ -174,10 +185,10 @@ async def test_fire_time_follows_the_schedules_own_offsets(settings, pal_client,
         entry = next(e for e in app.state.scheduler.list() if e["id"] == created["id"])
 
         fire = datetime.fromisoformat(entry["next_fire_at"])
-        restart = datetime.fromisoformat(entry["next_restart_at"])
+        action_at = datetime.fromisoformat(entry["next_action_at"])
 
         assert (fire.hour, fire.minute) == (3, 55)
-        assert (restart.hour, restart.minute) == (4, 0)
+        assert (action_at.hour, action_at.minute) == (4, 0)
     finally:
         app.state.scheduler.shutdown()
 
@@ -185,7 +196,7 @@ async def test_fire_time_follows_the_schedules_own_offsets(settings, pal_client,
 async def test_scheduled_fire_triggers_restart(app, mock_state):
     """スケジュール発火が実際に再起動シーケンスを起動すること。"""
     scheduler = app.state.scheduler
-    created = scheduler.add("daily", "04:00", "テスト")
+    created = scheduler.add("daily", "04:00", "テスト", **ANNOUNCE_KW)
 
     await scheduler._fire(created["id"])
     await app.state.restart.wait()
@@ -213,16 +224,31 @@ async def test_schedule_uses_its_own_announcement(client, app, mock_state):
     assert all("深夜メンテのため" in a for a in mock_state.announcements[:3])
 
 
-async def test_schedule_without_announcement_falls_back_to_default(app, mock_state):
-    """古い定義（アナウンス欄なし）は既定文面で動くこと。"""
-    scheduler = app.state.scheduler
-    created = scheduler.add("daily", "04:00", "旧定義")
+async def test_legacy_definition_without_announcement_still_runs(settings, pal_client, notifier, mock_state):
+    """動作種別もアナウンス欄も持たない古い JSON を読み込んでも動くこと。"""
+    import json
 
-    await scheduler._fire(created["id"])
-    await app.state.restart.wait()
+    from app.main import create_app
 
-    assert app.state.restart.status.phase == "done"
-    assert mock_state.announcements
+    settings.schedule_store.parent.mkdir(parents=True, exist_ok=True)
+    settings.schedule_store.write_text(json.dumps([{
+        "id": "legacy01", "kind": "daily", "spec": "04:00", "label": "旧定義",
+        "enabled": True, "created_at": "2026-01-01T00:00:00",
+    }]), encoding="utf-8")
+
+    app = create_app(settings, pal_client=pal_client, notifier=notifier, start_background=False)
+    app.state.scheduler.start()
+    try:
+        entry = next(e for e in app.state.scheduler.list() if e["id"] == "legacy01")
+        assert entry["action"] == "restart"          # 既定は再起動
+        assert entry["notice_offsets"] is None       # 既定値に任せる
+
+        await app.state.scheduler._fire("legacy01")
+        await app.state.restart.wait()
+        assert app.state.restart.status.phase == "done"
+        assert mock_state.announcements              # 既定文面で予告が出る
+    finally:
+        app.state.scheduler.shutdown()
 
 
 @pytest.mark.parametrize(
@@ -233,10 +259,12 @@ async def test_schedule_without_announcement_falls_back_to_default(app, mock_sta
     ],
 )
 async def test_schedule_requires_announcement(client, bad):
+    """再起動/停止の予約は、無告知では作れない。"""
     resp = await client.post(
         "/api/schedules", json={"kind": "daily", "spec": "04:00", **bad}
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    assert "アナウンス" in resp.json()["detail"]
     assert (await client.get("/api/schedules")).json()["schedules"] == []
 
 
@@ -257,10 +285,151 @@ async def test_once_schedule_disables_itself_after_firing(app):
 
     scheduler = app.state.scheduler
     when = (datetime.now() + timedelta(days=1)).replace(microsecond=0).isoformat()
-    created = scheduler.add("once", when, "単発")
+    created = scheduler.add("once", when, "単発", **ANNOUNCE_KW)
 
     await scheduler._fire(created["id"])
     await app.state.restart.wait()
 
     entry = next(e for e in scheduler.list() if e["id"] == created["id"])
     assert entry["enabled"] is False
+
+
+# ---- 動作種別（起動 / 停止 / 再起動） --------------------------------------
+
+
+async def test_default_action_is_restart(client):
+    created = (await client.post("/api/schedules", json=schedule_body(kind="daily", spec="04:00"))).json()
+    assert created["action"] == "restart"
+    assert created["action_label"] == "再起動"
+    assert created["announced"] is True
+
+
+async def test_stop_schedule_runs_the_stop_sequence(client, app, mock_state):
+    created = (await client.post("/api/schedules", json=schedule_body(
+        kind="daily", spec="04:00", action="stop", label="メンテ枠",
+        announce_message="メンテのため{time}後に停止します",
+    ))).json()
+    assert created["action_label"] == "停止"
+
+    await app.state.scheduler._fire(created["id"])
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    assert status.mode == "stop"
+    assert status.phase == "done"
+    assert "systemctl_stop" in [s["name"] for s in status.steps]
+    assert all("停止します" in a for a in mock_state.announcements[:3])
+
+
+async def test_start_schedule_starts_the_server_without_announcing(client, app, mock_state, notifier):
+    """起動の予約は予告を伴わない（停止中のサーバには送れない）。"""
+    mock_state.running = False
+    created = (await client.post("/api/schedules", json={
+        "kind": "daily", "spec": "05:00", "action": "start", "label": "朝の起動",
+    })).json()
+    assert created["announced"] is False
+    assert created["notice_offsets"] is None
+
+    await app.state.scheduler._fire(created["id"])
+
+    # 開発以外のバックエンドでは systemctl が simulated になるだけで、呼び出しは走る
+    assert mock_state.announcements == []
+    assert any(n["title"] == "サーバーを起動しました" for n in notifier.sent)
+
+
+async def test_start_schedule_needs_no_announcement(client):
+    resp = await client.post("/api/schedules", json={
+        "kind": "daily", "spec": "05:00", "action": "start",
+    })
+    assert resp.status_code == 200
+
+
+async def test_start_schedule_ignores_supplied_announcement(client):
+    """起動に予告を渡しても保持しない（送れないため）。"""
+    created = (await client.post("/api/schedules", json=schedule_body(
+        kind="daily", spec="05:00", action="start",
+    ))).json()
+    assert created["announce_message"] == ""
+    assert created["notice_offsets"] is None
+
+
+async def test_start_schedule_fires_exactly_on_time(client, app):
+    """起動は予告リードが無いので、指定時刻ちょうどに発火する。"""
+    from datetime import datetime
+
+    created = (await client.post("/api/schedules", json={
+        "kind": "daily", "spec": "05:00", "action": "start",
+    })).json()
+    entry = next(e for e in app.state.scheduler.list() if e["id"] == created["id"])
+
+    fire = datetime.fromisoformat(entry["next_fire_at"])
+    action_at = datetime.fromisoformat(entry["next_action_at"])
+    assert (fire.hour, fire.minute) == (5, 0)
+    assert fire == action_at
+
+
+async def test_unknown_action_is_rejected(client):
+    resp = await client.post("/api/schedules", json=schedule_body(
+        kind="daily", spec="04:00", action="explode",
+    ))
+    assert resp.status_code == 400
+    assert "動作" in resp.json()["detail"]
+
+
+async def test_changing_action_to_start_drops_the_announcement(client):
+    created = (await client.post("/api/schedules", json=schedule_body(kind="daily", spec="04:00"))).json()
+    assert created["announce_message"]
+
+    resp = await client.patch(f"/api/schedules/{created['id']}", json={"action": "start"})
+    assert resp.status_code == 200
+    assert resp.json()["action"] == "start"
+    assert resp.json()["announce_message"] == ""
+    assert resp.json()["notice_offsets"] is None
+
+
+async def test_changing_action_to_stop_requires_an_announcement(client):
+    created = (await client.post("/api/schedules", json={
+        "kind": "daily", "spec": "05:00", "action": "start",
+    })).json()
+
+    resp = await client.patch(f"/api/schedules/{created['id']}", json={"action": "stop"})
+    assert resp.status_code == 400
+
+
+async def test_actions_are_listed_for_the_ui(client):
+    body = (await client.get("/api/schedules")).json()
+    assert [a["value"] for a in body["actions"]] == ["restart", "stop", "start"]
+
+
+async def test_maintenance_window_can_be_scheduled(client, app):
+    """停止と起動を別々に予約して、メンテ枠を作れること。"""
+    await client.post("/api/schedules", json=schedule_body(
+        kind="daily", spec="04:00", action="stop", label="メンテ開始",
+        announce_message="メンテのため{time}後に停止します",
+    ))
+    await client.post("/api/schedules", json={
+        "kind": "daily", "spec": "04:30", "action": "start", "label": "メンテ終了",
+    })
+
+    entries = (await client.get("/api/schedules")).json()["schedules"]
+    by_label = {e["label"]: e for e in entries}
+    assert by_label["メンテ開始"]["action"] == "stop"
+    assert by_label["メンテ終了"]["action"] == "start"
+    assert by_label["メンテ開始"]["next_action_at"] < by_label["メンテ終了"]["next_action_at"]
+
+
+async def test_schedules_with_actions_survive_a_reload(client, settings, pal_client, notifier):
+    from app.main import create_app
+
+    await client.post("/api/schedules", json={
+        "kind": "daily", "spec": "05:00", "action": "start", "label": "朝",
+    })
+
+    fresh = create_app(settings, pal_client=pal_client, notifier=notifier, start_background=False)
+    fresh.state.scheduler.start()
+    try:
+        entries = fresh.state.scheduler.list()
+        assert len(entries) == 1
+        assert entries[0]["action"] == "start"
+    finally:
+        fresh.state.scheduler.shutdown()
