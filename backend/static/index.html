@@ -1007,14 +1007,20 @@ function renderSettings(root) {
       class: "btn primary", text: "保存",
       onclick: () => openModal({
         title: "設定ファイルを上書きします",
-        lead: "上書き前に自動でバックアップを取ります。変更の反映にはサーバの再起動が必要です。",
+        lead: "上書き前に自動でバックアップを取ります。保存後、サーバを起動すると反映されます。",
         danger: true,
         confirmLabel: "上書き保存する",
-        body: [el("div", { class: "warnbox",
-          text: "内容が壊れているとサーバが起動しなくなります。OptionSettings 行の形式を確認してください。" })],
+        body: [
+          el("div", { class: "warnbox" }, [
+            el("div", { text: "内容が壊れているとサーバが起動しなくなります。OptionSettings 行の形式を確認してください。" }),
+            el("div", { style: "margin-top:6px",
+              text: "また Palworld は停止時に ini を上書きするため、稼働中に保存しても変更は失われます。"
+                  + "サーバ停止中に保存してください（稼働中の保存はサーバ側で拒否されます）。" }),
+          ]),
+        ],
         async onConfirm() {
           const r = await put("/api/settings-ini", { text: area.value });
-          toast("保存しました（バックアップ: " + r.backup + "）", "ok");
+          toast("保存しました（バックアップ: " + r.backup + "）。サーバを起動すると反映されます", "ok");
           load();
         },
       }),
@@ -1083,7 +1089,9 @@ function renderSettings(root) {
 function renderGameSettings(root) {
   root.appendChild(el("h1", { text: "ゲーム設定" }));
   const pathInfo = el("div", { class: "muted small", style: "margin-bottom:12px" });
+  const runningWarn = el("div", { style: "margin-bottom:12px" });
   root.appendChild(pathInfo);
+  root.appendChild(runningWarn);
 
   const search = el("input", { type: "text", placeholder: "項目名で絞り込み（例: rate, pvp, ExpRate）", style: "flex:1;min-width:220px" });
   const onlyChanged = el("input", { type: "checkbox" });
@@ -1112,9 +1120,13 @@ function renderGameSettings(root) {
   const availableByName = new Map();
   let categories = [];
   let available = [];
+  let discovered = [];
+  let serverRunning = false;
+  // 自分で名前と型を指定して追加した項目: name -> {name, type, value, label, ...}
+  const customs = new Map();
   let activeCat = "__all__";
 
-  function isChanged(name) { return edits.has(name) || additions.has(name); }
+  function isChanged(name) { return edits.has(name) || additions.has(name) || customs.has(name); }
 
   function displayValue(spec, value) {
     if (spec.type === "bool") return value ? "有効" : "無効";
@@ -1125,6 +1137,7 @@ function renderGameSettings(root) {
 
   function setEdit(name, value) {
     // 新規追加した項目は、元の値が無いので常に「変更あり」として持つ
+    if (customs.has(name)) { customs.get(name).value = value; paint(); return; }
     if (additions.has(name)) { additions.set(name, value); paint(); return; }
     const entry = specs.get(name);
     // 数値は型を揃えてから比較する（"1.0" と 1 を別物にしない）
@@ -1142,11 +1155,63 @@ function renderGameSettings(root) {
 
   function removeAddition(name) {
     additions.delete(name);
+    customs.delete(name);
     paint();
+  }
+
+  // 名前と型を指定して、スキーマにも ini にも無い項目を追加する
+  function openCustomModal() {
+    const name = el("input", { type: "text", placeholder: "例: bNewOptionFromUpdate" });
+    const type = el("select", null, [
+      el("option", { value: "bool", text: "有効/無効 (True/False)" }),
+      el("option", { value: "int", text: "整数" }),
+      el("option", { value: "float", text: "小数（1.000000 形式で書き込み）" }),
+      el("option", { value: "string", text: "文字列（\"...\" で囲んで書き込み）" }),
+    ]);
+    const value = el("input", { type: "text", placeholder: "初期値（例: True / 10 / 1.5 / Steam）" });
+
+    openModal({
+      title: "項目を自分で追加する",
+      lead: "この管理ツールがまだ把握していないプロパティを、名前と型を指定して設定ファイルに書き足します。"
+          + "Palworld のアップデートで増えた項目を、ツールの更新を待たずに設定できます。",
+      confirmLabel: "追加する",
+      body: [
+        el("div", { class: "infobox", text: "項目名のスペルはゲーム側と厳密に一致させてください。"
+          + "誤った名前を書いてもゲームは無視するだけですが、意図した設定は効きません。" }),
+        field("項目名", name, "英数字と _ のみ。先頭は英字か _"),
+        field("型", type, "ini への書き方が変わります"),
+        field("値", value),
+      ],
+      validate() {
+        const n = name.value.trim();
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) return "項目名は英数字と _ のみです（先頭は英字か _）";
+        if (specs.has(n) || customs.has(n)) return "その項目はすでに一覧にあります";
+        if (!value.value.trim() && type.value !== "string") return "値を入力してください";
+        return null;
+      },
+      async onConfirm() {
+        const n = name.value.trim();
+        const raw = value.value.trim();
+        let v = raw;
+        if (type.value === "bool") v = /^(true|1|yes|on|有効)$/i.test(raw);
+        else if (type.value === "int") v = parseInt(raw, 10);
+        else if (type.value === "float") v = parseFloat(raw);
+        if ((type.value === "int" || type.value === "float") && !Number.isFinite(v)) {
+          throw new Error("数値として解釈できません: " + raw);
+        }
+        customs.set(n, {
+          name: n, label: n, type: type.value, value: v,
+          category: "other", known: false, choices: [], secret: false,
+          min: null, max: null, step: null, custom: true,
+        });
+        paint();
+      },
+    });
   }
 
   // --- 入力コントロール ---
   function currentValue(f) {
+    if (customs.has(f.name)) return customs.get(f.name).value;
     if (additions.has(f.name)) return additions.get(f.name);
     if (edits.has(f.name)) return edits.get(f.name);
     return f.value;
@@ -1206,7 +1271,7 @@ function renderGameSettings(root) {
   }
 
   function buildCard(f) {
-    const isNew = additions.has(f.name);
+    const isNew = additions.has(f.name) || customs.has(f.name);
     const changed = isChanged(f.name);
     return el("div", { class: "setting" + (changed ? " changed" : "") }, [
       el("div", { class: "head" }, [
@@ -1260,6 +1325,9 @@ function renderGameSettings(root) {
   function visibleFields() {
     const out = [];
     // 追加したものは一覧の先頭に出す（今どこを触っているか見失わないように）
+    for (const [, f] of customs) {
+      if (matches(f)) out.push(f);
+    }
     for (const [name] of additions) {
       const f = availableByName.get(name);
       if (f && matches(f)) out.push(f);
@@ -1274,7 +1342,7 @@ function renderGameSettings(root) {
     return out;
   }
 
-  // まだ追加していない未設定項目
+  // まだ追加していない未設定項目（スキーマ由来 + 稼働中サーバから発見したもの）
   function availableFields() {
     const out = [];
     for (const cat of available) {
@@ -1283,6 +1351,11 @@ function renderGameSettings(root) {
         if (!matches(f)) continue;
         out.push(f);
       }
+    }
+    for (const f of discovered) {
+      if (additions.has(f.name) || customs.has(f.name)) continue;
+      if (!matches(f)) continue;
+      out.push(f);
     }
     return out;
   }
@@ -1303,17 +1376,20 @@ function renderGameSettings(root) {
 
   function paintSavebar() {
     clear(savebar);
-    const n = edits.size + additions.size;
+    const newCount = additions.size + customs.size;
+    const n = edits.size + newCount;
     const label = n
-      ? n + " 件の変更" + (additions.size ? "（新規追加 " + additions.size + "）" : "")
+      ? n + " 件の変更" + (newCount ? "（新規追加 " + newCount + "）" : "")
       : "変更なし";
     savebar.appendChild(el("strong", { text: label }));
     savebar.appendChild(el("span", { class: "muted small",
-      text: n ? "保存するとサーバ再起動後に反映されます" : "項目を編集すると差分がここに出ます" }));
+      text: !n ? "項目を編集すると差分がここに出ます"
+        : serverRunning ? "保存にはサーバの停止が必要です"
+        : "保存後、サーバを起動すると反映されます" }));
     savebar.appendChild(el("div", { style: "flex:1" }));
     savebar.appendChild(el("button", {
       class: "btn", text: "変更を破棄", disabled: n ? null : "disabled",
-      onclick: () => { edits.clear(); additions.clear(); paint(); },
+      onclick: () => { edits.clear(); additions.clear(); customs.clear(); paint(); },
     }));
     savebar.appendChild(el("button", {
       class: "btn primary", text: "変更を保存", disabled: n ? null : "disabled",
@@ -1334,14 +1410,13 @@ function renderGameSettings(root) {
     clear(availableBox);
     const rest = availableFields();
     if (rest.length) {
-      const head = el("div", { class: "row", style: "margin:22px 0 8px" }, [
+      availableBox.appendChild(el("div", { class: "row", style: "margin:22px 0 8px" }, [
         el("h2", { style: "margin:0", text: "未設定の項目（" + rest.length + "）" }),
         el("button", {
           class: "btn small", text: showAvailable ? "隠す" : "表示する",
           onclick: () => { showAvailable = !showAvailable; paint(); },
         }),
-      ]);
-      availableBox.appendChild(head);
+      ]));
       availableBox.appendChild(el("div", { class: "muted small", style: "margin-bottom:10px",
         text: "設定ファイルに書かれていない項目です。ゲーム側の既定値で動作しています。"
             + "値を変えたい項目だけ「追加」してください（追加した項目だけが書き足されます）。" }));
@@ -1351,6 +1426,12 @@ function renderGameSettings(root) {
         availableBox.appendChild(g);
       }
     }
+    // 一覧のどこにも無いプロパティを、自分で足すための入口
+    availableBox.appendChild(el("div", { class: "row", style: "margin-top:16px" }, [
+      el("button", { class: "btn", text: "＋ 一覧に無い項目を自分で追加", onclick: openCustomModal }),
+      el("span", { class: "muted small",
+        text: "Palworld のアップデートで増えた項目を、このツールの更新を待たずに設定できます" }),
+    ]));
     paintSavebar();
   }
 
@@ -1380,31 +1461,54 @@ function renderGameSettings(root) {
         ? "未設定（既定 " + displayValue(f, f.default) + "）" : "未設定";
       list.appendChild(diffRow(f.label + "（新規追加）", name, before, displayValue(f, value)));
     }
+    for (const [name, f] of customs) {
+      list.appendChild(diffRow(name + "（手動で追加）", name, "未設定", displayValue(f, f.value)));
+    }
 
-    const n = edits.size + additions.size;
+    const newCount = additions.size + customs.size;
+    const n = edits.size + newCount;
+
     openModal({
       title: n + " 件の設定を変更します",
-      lead: "上書き前に自動でバックアップを取ります。反映にはサーバの再起動が必要です。",
+      lead: serverRunning
+        ? "ゲームサーバが稼働中です。このまま保存すると変更が失われます。"
+        : "上書き前に自動でバックアップを取ります。保存後、サーバを起動すると反映されます。",
       danger: true,
-      confirmLabel: "保存する",
+      confirmLabel: serverRunning ? "サーバ設定タブへ" : "保存する",
       body: [
-        additions.size ? el("div", { class: "warnbox",
-          text: additions.size + " 件は設定ファイルに新しく書き足されます。"
+        // Palworld は停止時に ini を上書きするので、稼働中の保存は無意味になる
+        serverRunning ? el("div", { class: "warnbox" }, [
+          el("div", { text: "Palworld は停止時に、メモリ上の設定で PalWorldSettings.ini を上書きします。" }),
+          el("div", { text: "稼働中に保存しても、次にサーバを停止した時点で書き戻されて消えます。" }),
+          el("div", { style: "margin-top:6px", text: "正しい手順: サーバを停止 → ここで保存 → サーバを起動" }),
+        ]) : null,
+        newCount ? el("div", { class: "warnbox",
+          text: newCount + " 件は設定ファイルに新しく書き足されます。"
               + "以降はゲーム側の既定値ではなく、ここで指定した値が使われます。" }) : null,
         list,
       ],
       async onConfirm() {
+        if (serverRunning) {
+          // 保存させず、停止導線へ送る（変更内容は破棄しない）
+          setView("settings");
+          toast("サーバを停止してから、ゲーム設定タブで保存してください", "err");
+          return;
+        }
         const values = {}, adds = {};
         for (const [name, value] of edits) values[name] = value;
         for (const [name, value] of additions) adds[name] = value;
-        const r = await put("/api/settings-ini/fields", { values, additions: adds });
+        const custom_additions = Array.from(customs.values())
+          .map(f => ({ name: f.name, type: f.type, value: f.value }));
+
+        const r = await put("/api/settings-ini/fields", { values, additions: adds, custom_additions });
         if (r.result === "unchanged") {
           toast("変更点がなかったため保存しませんでした");
         } else {
-          toast("保存しました（バックアップ: " + r.backup + "）", "ok");
+          toast("保存しました（バックアップ: " + r.backup + "）。サーバを起動すると反映されます", "ok");
         }
         edits.clear();
         additions.clear();
+        customs.clear();
         await load();
       },
     });
@@ -1425,6 +1529,23 @@ function renderGameSettings(root) {
 
     categories = data.categories;
     available = data.available || [];
+    discovered = data.discovered || [];
+    serverRunning = !!data.server_running;
+
+    clear(runningWarn);
+    if (serverRunning) {
+      runningWarn.appendChild(el("div", { class: "warnbox" }, [
+        el("strong", { text: "サーバ稼働中のため保存できません" }),
+        el("div", { style: "margin-top:4px",
+          text: "Palworld は停止時に、メモリ上の設定で PalWorldSettings.ini を上書きします。"
+              + "稼働中に書き換えても次の停止で失われるため、保存はサーバ停止中のみ受け付けます。" }),
+        el("div", { class: "row", style: "margin-top:8px" }, [
+          el("span", { class: "muted small", text: "手順: サーバを停止 → ここで編集して保存 → サーバを起動" }),
+          el("button", { class: "btn small", text: "サーバ操作へ", onclick: () => setView("settings") }),
+        ]),
+      ]));
+    }
+
     specs.clear();
     availableByName.clear();
     let total = 0;
@@ -1438,8 +1559,11 @@ function renderGameSettings(root) {
     for (const cat of available) {
       for (const f of cat.fields) { availableByName.set(f.name, f); rest++; }
     }
+    for (const f of discovered) { availableByName.set(f.name, f); rest++; }
+
     pathInfo.textContent = data.path + "  （設定済み " + total + " 項目"
-      + (rest ? " / 未設定 " + rest + " 項目" : "") + "）";
+      + (rest ? " / 未設定 " + rest + " 項目" : "") + "）"
+      + (discovered.length ? "  ※うち " + discovered.length + " 件は稼働中サーバから検出" : "");
     paint();
   }
 

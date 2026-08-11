@@ -308,3 +308,14 @@ def mock_fail(fail_all: bool = False, fail_save: bool = False) -> dict[str, Any]
 def mock_fps(value: int | None = None) -> dict[str, Any]:
     STATE.fixed_fps = value
     return {"fixed_fps": STATE.fixed_fps}
+
+
+@app.post("/__mock__/settings")
+def mock_settings(overrides: dict[str, Any]) -> dict[str, Any]:
+    """/v1/api/settings が返す内容に項目を足す/上書きする。
+
+    「Palworld のアップデートで新しいプロパティが増えた」状況を再現して、
+    管理ツール側の項目発見を確認するために使う。
+    """
+    STATE.settings_overrides.update(overrides)
+    return STATE.settings_overrides

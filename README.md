@@ -55,10 +55,34 @@ UI も API も一通り動作確認できる。
 公式の既定値が確認できている項目はそれを初期値として提示し、裏取りできていない項目は
 「既定値は未確認」と明示する（推測値を既定値として出すと事故になる）。
 
-**Palworld の更新で項目が増えても壊れない。** スキーマに無いキーは ini 上の値から
-型を推論して「未知」バッジ付きで編集できるようにしてある。
-知らない項目を UI から消してしまうと保存時に消滅するのが一番まずいので、そこは必ず通す。
-ただし**追加**できるのはスキーマに定義がある項目だけ（タイプミスで妙なキーを増やさないため）。
+#### ⚠️ 保存はサーバ停止中のみ
+
+**Palworld は停止時に、メモリ上の設定で `PalWorldSettings.ini` を上書きする。**
+そのため稼働中に編集しても、次にサーバを止めた時点で書き戻されて消える。
+
+正しい手順は **サーバを停止 → 編集して保存 → サーバを起動**。
+`PUT /api/settings-ini` と `PUT /api/settings-ini/fields` は稼働中だと 409 を返して保存を止める
+（緊急時は `force: true` で上書きできるが、失われる前提で使うこと）。
+画面にも稼働中は警告を出し、保存ボタンからサーバ操作へ誘導する。
+
+#### 新しいプロパティへの追従
+
+設定項目の情報源は3つある。
+
+| 情報源 | 内容 | 更新 |
+|--------|------|------|
+| `settings_schema.py` の `FIELDS` | 82項目の型・ラベル・範囲・カテゴリ。**手書き** | このツールの更新が必要 |
+| 稼働中サーバの `/v1/api/settings` | サーバ自身が持つ設定。**権威ある情報源** | 自動 |
+| 設定ファイルの実際の中身 | いま書かれているキー | 自動 |
+
+手書きスキーマは Palworld の更新に必ず遅れるので、以下で補っている。
+
+- **ini にある未知のキー** — 値から型を推論し「未知」バッジ付きで編集できる
+- **サーバが持つ未設定のキー** — `/v1/api/settings` と突き合わせて「未設定の項目」に出す
+- **どこにも無いキー** — 「一覧に無い項目を自分で追加」から名前と型を指定して書き足せる
+
+これでツールの更新を待たずに新プロパティを設定できる。
+項目名は `^[A-Za-z_][A-Za-z0-9_]*$` に限定し、`OptionSettings` の構文が壊れないようにしている。
 
 ### Discord 通知
 
@@ -81,6 +105,7 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 - **無告知でサーバを落とさない** — アナウンス文と予告タイミングを API レベルで必須にしている（既定値へのフォールバックなし）
 - **予告の失敗でシーケンスを止めない** — アナウンスが届かなくても保存と停止は続行し、失敗は履歴に残す
 - **設定ファイルを壊さない** — `OptionSettings` 行が無い内容は 400 で弾き、書き込みは一時ファイル経由で原子的に置換
+- **消える変更を書かせない** — Palworld が停止時に ini を上書きする仕様のため、稼働中の保存は 409 で止める
 - **ゲームサーバが落ちていても画面は出る** — `/api/status` は常に 200 を返し、`online: false` で表現する
 - **XSS 対策** — 値の描画は必ず `textContent`。`innerHTML` は使わない
 - **秘密情報の伏字化** — Webhook URL と AdminPassword は `/api/config` で伏字にして返す
@@ -104,7 +129,7 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── notify.py        Discord Webhook
 │   │   └── services.py      systemd ユニット操作
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（157件）
+│   ├── tests/               pytest（174件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
@@ -147,6 +172,10 @@ curl -XPOST 'http://127.0.0.1:8212/__mock__/fail?fail_all=true'   # サーバ応
 curl -XPOST 'http://127.0.0.1:8212/__mock__/fail?fail_save=true'  # ワールド保存だけ失敗させる
 curl -XPOST 'http://127.0.0.1:8212/__mock__/fps?value=12'  # FPS を固定
 curl -XPOST http://127.0.0.1:8212/__mock__/reset           # 初期状態に戻す
+
+# アップデートで新プロパティが増えた状況を再現（項目発見の確認用）
+curl -XPOST http://127.0.0.1:8212/__mock__/settings \
+  -H 'Content-Type: application/json' -d '{"bNewFeatureFromPatch":true}'
 ```
 
 `dev.sh` では予告間隔を 30/10/5 秒に縮めてあるので、再起動シーケンスもすぐ確認できる。
@@ -181,6 +210,13 @@ curl -XPUT http://127.0.0.1:8080/api/settings-ini/fields \
 curl -XPUT http://127.0.0.1:8080/api/settings-ini/fields \
   -H 'Content-Type: application/json' \
   -d '{"additions":{"ItemWeightRate":0.5}}'
+
+# 一覧に無い新プロパティを、名前と型を指定して追加
+curl -XPUT http://127.0.0.1:8080/api/settings-ini/fields \
+  -H 'Content-Type: application/json' \
+  -d '{"custom_additions":[{"name":"bNewFlagFromPatch","type":"bool","value":true}]}'
+
+# ※ いずれもゲームサーバ停止中でないと 409 になる
 ```
 
 ## 設定ファイル（.env）の置き場所

@@ -276,6 +276,39 @@ def initial_value(spec: FieldSpec) -> Any:
     return _NEUTRAL.get(spec.type, "")
 
 
+def _type_of(value: Any) -> FieldType:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    return "string"
+
+
+def discovered_fields(
+    server_settings: dict[str, Any], options: dict[str, str]
+) -> list[dict[str, Any]]:
+    """稼働中のサーバが返した設定のうち、ini にもスキーマにも無い項目。
+
+    ハードコードしたスキーマは Palworld の更新に必ず遅れる。
+    REST API `/v1/api/settings` は動いているサーバ自身が持つ設定を返すので、
+    そちらを「新しいプロパティ」の発見源として使う。
+    """
+    out: list[dict[str, Any]] = []
+    for name, value in sorted(server_settings.items()):
+        if name in options or name in FIELDS_BY_NAME:
+            continue
+        spec = custom_spec(name, _type_of(value))
+        item = spec.as_dict()
+        item["value"] = value
+        item["default"] = value
+        item["default_known"] = True
+        item["help"] = "稼働中のサーバが持っている項目です（設定ファイルには未記載）。"
+        out.append(item)
+    return out
+
+
 def missing_fields(options: dict[str, str]) -> list[dict[str, Any]]:
     """スキーマにはあるが、設定ファイルに書かれていない項目。
 
@@ -299,6 +332,61 @@ def missing_fields(options: dict[str, str]) -> list[dict[str, Any]]:
         if items:
             out.append({"key": key, "label": label, "fields": items})
     return out
+
+
+_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CUSTOM_TYPES = ("bool", "int", "float", "string")
+
+
+def custom_spec(name: str, ftype: str) -> FieldSpec:
+    """ユーザーが自分で型を指定して追加する項目の定義。"""
+    return FieldSpec(
+        name=name,
+        label=name,
+        type=ftype,  # type: ignore[arg-type]
+        category="other",
+        help="手動で追加した項目です。",
+        known=False,
+    )
+
+
+def add_custom_fields(
+    items: list[dict[str, Any]], options: dict[str, str]
+) -> tuple[dict[str, str], list[str]]:
+    """スキーマに無い新しいプロパティを、型を明示して書き足す。
+
+    Palworld のアップデートで増えた項目を、この管理ツールの更新を待たずに
+    設定できるようにするための口。名前と型はユーザーが指定する。
+    """
+    updates: dict[str, str] = {}
+    errors: list[str] = []
+
+    for item in items:
+        name = str(item.get("name", "")).strip()
+        ftype = str(item.get("type", "")).strip()
+        value = item.get("value")
+
+        if not _KEY_RE.match(name):
+            errors.append(f"{name!r}: 項目名は英数字と _ のみ（先頭は英字か _）です")
+            continue
+        if name in options:
+            errors.append(f"{name}: すでに設定ファイルに存在します")
+            continue
+        if ftype not in _CUSTOM_TYPES:
+            errors.append(f"{name}: 型は {'/'.join(_CUSTOM_TYPES)} から選んでください")
+            continue
+
+        spec = FIELDS_BY_NAME.get(name) or custom_spec(name, ftype)
+        error = validate_value(spec, value)
+        if error:
+            errors.append(error)
+            continue
+        try:
+            updates[name] = format_value(spec, value)
+        except (TypeError, ValueError):
+            errors.append(f"{name}: 値の形式が正しくありません（{value!r}）")
+
+    return updates, errors
 
 
 def add_fields(values: dict[str, Any], options: dict[str, str]) -> tuple[dict[str, str], list[str]]:

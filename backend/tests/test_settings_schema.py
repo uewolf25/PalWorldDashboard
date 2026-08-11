@@ -34,14 +34,26 @@ def full_settings(settings, full_ini):
     return settings
 
 
-@pytest.fixture
-async def full_client(full_settings, pal_client, notifier):
+def _build_client(settings, pal_client, notifier):
     from httpx import ASGITransport, AsyncClient
 
     from app.main import create_app
 
-    app = create_app(full_settings, pal_client=pal_client, notifier=notifier, start_background=False)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://manager") as c:
+    app = create_app(settings, pal_client=pal_client, notifier=notifier, start_background=False)
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://manager")
+
+
+@pytest.fixture
+async def full_client(full_settings, pal_client, notifier, server_stopped):
+    """ini を編集する前提のクライアント。ゲームサーバは停止済み。"""
+    async with _build_client(full_settings, pal_client, notifier) as c:
+        yield c
+
+
+@pytest.fixture
+async def running_client(full_settings, pal_client, notifier, mock_state):
+    """ゲームサーバが稼働している状態のクライアント。"""
+    async with _build_client(full_settings, pal_client, notifier) as c:
         yield c
 
 
@@ -190,6 +202,150 @@ async def test_fields_endpoint_returns_typed_form(full_client):
     assert fields["ServerName"]["value"] == "Test, Server"
 
 
+# ---- サーバ稼働中は書き換えさせない ----------------------------------------
+#
+# Palworld は停止時にメモリ上の設定で PalWorldSettings.ini を上書きする。
+# 稼働中に書き換えても次の停止で消えるので、保存自体を止める必要がある。
+
+
+async def test_save_is_blocked_while_server_is_running(running_client, full_ini):
+    original = full_ini.read_text()
+    resp = await running_client.put("/api/settings-ini/fields", json={"values": {"ExpRate": 2.0}})
+
+    assert resp.status_code == 409
+    assert "停止" in resp.json()["detail"]
+    assert full_ini.read_text() == original
+
+
+async def test_raw_save_is_also_blocked_while_running(running_client, full_ini):
+    original = full_ini.read_text()
+    resp = await running_client.put("/api/settings-ini", json={"text": FULL_INI})
+
+    assert resp.status_code == 409
+    assert full_ini.read_text() == original
+
+
+async def test_force_overrides_the_running_guard(running_client, full_ini):
+    resp = await running_client.put(
+        "/api/settings-ini/fields", json={"values": {"ExpRate": 2.0}, "force": True}
+    )
+    assert resp.status_code == 200
+    assert "ExpRate=2.000000" in full_ini.read_text()
+
+
+async def test_fields_endpoint_reports_running(running_client):
+    assert (await running_client.get("/api/settings-ini/fields")).json()["server_running"] is True
+
+
+async def test_fields_endpoint_reports_stopped(full_client):
+    # モックの状態は共有なので、稼働中/停止中は別テストに分ける
+    assert (await full_client.get("/api/settings-ini/fields")).json()["server_running"] is False
+
+
+async def test_save_succeeds_when_server_is_stopped(full_client, full_ini):
+    resp = await full_client.put("/api/settings-ini/fields", json={"values": {"ExpRate": 2.0}})
+    assert resp.status_code == 200
+    # 「再起動すれば反映」ではなく「起動すれば反映」
+    assert resp.json()["start_required"] is True
+
+
+# ---- 稼働中サーバからの項目発見 --------------------------------------------
+
+
+async def test_discovers_properties_from_the_live_server(running_client, mock_state):
+    """スキーマにも ini にも無い項目を、稼働中サーバの設定から拾えること。
+
+    ハードコードしたスキーマは Palworld の更新に必ず遅れるので、
+    サーバ自身が返す設定を発見源として使う。
+    """
+    mock_state.settings_overrides = {"bBrandNewOptionFromUpdate": True, "NewTuningRate": 2.5}
+
+    body = (await running_client.get("/api/settings-ini/fields")).json()
+    found = {f["name"]: f for f in body["discovered"]}
+
+    assert found["bBrandNewOptionFromUpdate"]["type"] == "bool"
+    assert found["bBrandNewOptionFromUpdate"]["value"] is True
+    assert found["NewTuningRate"]["type"] == "float"
+    assert found["NewTuningRate"]["known"] is False
+
+
+async def test_discovered_excludes_keys_already_in_file(running_client):
+    body = (await running_client.get("/api/settings-ini/fields")).json()
+    names = {f["name"] for f in body["discovered"]}
+    assert "ExpRate" not in names        # ini にある
+    assert "ItemWeightRate" not in names  # スキーマにある（available 側に出る）
+
+
+async def test_discovery_survives_a_dead_server(full_client):
+    """サーバが落ちていても画面は出る（発見は諦める）。"""
+    body = (await full_client.get("/api/settings-ini/fields")).json()
+    assert body["discovered"] == []
+    assert body["categories"]
+
+
+# ---- 一覧に無いプロパティを自分で追加 --------------------------------------
+
+
+async def test_custom_addition_writes_with_the_given_type(full_client, full_ini):
+    resp = await full_client.put(
+        "/api/settings-ini/fields",
+        json={"custom_additions": [
+            {"name": "bBrandNewFlag", "type": "bool", "value": True},
+            {"name": "NewTuningRate", "type": "float", "value": 2.5},
+            {"name": "NewCount", "type": "int", "value": 7},
+            {"name": "NewLabel", "type": "string", "value": "hello"},
+        ]},
+    )
+    assert resp.status_code == 200
+
+    text = full_ini.read_text()
+    assert "bBrandNewFlag=True" in text
+    assert "NewTuningRate=2.500000" in text
+    assert "NewCount=7" in text
+    assert 'NewLabel="hello"' in text
+
+
+async def test_custom_addition_appears_after_save(full_client):
+    await full_client.put(
+        "/api/settings-ini/fields",
+        json={"custom_additions": [{"name": "bBrandNewFlag", "type": "bool", "value": True}]},
+    )
+    body = (await full_client.get("/api/settings-ini/fields")).json()
+    fields = {f["name"]: f for c in body["categories"] for f in c["fields"]}
+
+    assert fields["bBrandNewFlag"]["value"] is True
+    assert fields["bBrandNewFlag"]["known"] is False  # スキーマ外なので「未知」扱い
+
+
+@pytest.mark.parametrize(
+    "bad,reason",
+    [
+        ({"name": "has space", "type": "bool", "value": True}, "項目名"),
+        ({"name": "1StartsWithDigit", "type": "int", "value": 1}, "項目名"),
+        ({"name": "Injected)Paren", "type": "int", "value": 1}, "項目名"),
+        ({"name": "ExpRate", "type": "float", "value": 2.0}, "すでに"),
+        ({"name": "OkName", "type": "date", "value": "x"}, "型"),
+    ],
+)
+async def test_custom_addition_is_validated(full_client, full_ini, bad, reason):
+    original = full_ini.read_text()
+    resp = await full_client.put("/api/settings-ini/fields", json={"custom_additions": [bad]})
+
+    assert resp.status_code == 400
+    assert reason in resp.json()["detail"]
+    assert full_ini.read_text() == original
+
+
+async def test_custom_addition_of_a_known_schema_name_uses_the_schema(full_client, full_ini):
+    """スキーマにある名前を手動追加した場合は、スキーマの検証が効くこと。"""
+    resp = await full_client.put(
+        "/api/settings-ini/fields",
+        json={"custom_additions": [{"name": "ItemWeightRate", "type": "float", "value": 999}]},
+    )
+    assert resp.status_code == 400
+    assert "20.0 以下" in resp.json()["detail"]
+
+
 async def test_fields_endpoint_when_file_missing(settings, pal_client, notifier, tmp_path):
     from httpx import ASGITransport, AsyncClient
 
@@ -210,7 +366,7 @@ async def test_update_fields_writes_formatted_values(full_client, full_ini):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["restart_required"] is True
+    assert body["start_required"] is True
     assert body["backup"]
 
     text = full_ini.read_text()
