@@ -46,6 +46,11 @@ class FieldSpec:
     secret: bool = False
     # スキーマに定義がある項目かどうか（推論で作った場合は False）
     known: bool = True
+    # 変更すると管理ツール自身がサーバと通信できなくなる項目。
+    # フォームからは編集させない（ini 全文編集からのみ変更できる）
+    locked: bool = False
+    # 他の項目の設定を無効化してしまう項目（Difficulty）
+    overrides_others: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -60,6 +65,8 @@ class FieldSpec:
             "step": self.step,
             "secret": self.secret,
             "known": self.known,
+            "locked": self.locked,
+            "overrides_others": self.overrides_others,
         }
 
 
@@ -85,14 +92,17 @@ FIELDS: list[FieldSpec] = [
     FieldSpec("ServerPassword", "参加パスワード", "string", "server",
               "設定すると参加時に入力が必要になります。", secret=True),
     FieldSpec("AdminPassword", "管理者パスワード", "string", "server",
-              "REST API / RCON の認証にも使われます。変更すると管理ツールの設定も更新が必要です。",
-              secret=True),
+              "REST API の認証に使われます。ここを変えると管理ツールがサーバと通信できなくなるため、"
+              "このフォームからは変更できません。",
+              secret=True, locked=True),
     FieldSpec("Region", "リージョン", "string", "server"),
     _flag("bUseAuth", "認証を使う", "server"),
     FieldSpec("BanListURL", "BANリストURL", "string", "server"),
     FieldSpec("Difficulty", "難易度", "enum", "server",
-              "None は「カスタム」扱いで、以下の個別設定がそのまま使われます。",
-              choices=["None", "Casual", "Normal", "Hard"]),
+              "None 以外にすると Palworld 側のプリセットが適用され、"
+              "経験値倍率や捕獲率などの個別設定は無視されます。"
+              "個別に調整したい場合は None のままにしてください。",
+              choices=["None", "Casual", "Normal", "Hard"], overrides_others=True),
     _flag("bIsMultiplay", "マルチプレイ", "server"),
 
     # --- 接続・API ---
@@ -100,10 +110,14 @@ FIELDS: list[FieldSpec] = [
     FieldSpec("PublicIP", "公開IP", "string", "network"),
     _flag("RCONEnabled", "RCONを有効にする", "network"),
     FieldSpec("RCONPort", "RCONポート", "int", "network", min=1, max=65535, step=1),
-    _flag("RESTAPIEnabled", "REST APIを有効にする", "network",
-          "この管理ツールが使います。無効にすると操作できなくなります。"),
+    FieldSpec("RESTAPIEnabled", "REST APIを有効にする", "bool", "network",
+              "この管理ツールが使います。無効にすると一切操作できなくなるため、"
+              "このフォームからは変更できません。",
+              locked=True),
     FieldSpec("RESTAPIPort", "REST APIポート", "int", "network",
-              "この管理ツールの PAL_PORT と一致させてください。", min=1, max=65535, step=1),
+              "この管理ツールの PAL_PORT と一致している必要があります。ずれると通信できなくなるため、"
+              "このフォームからは変更できません。",
+              min=1, max=65535, step=1, locked=True),
     _flag("bShowPlayerList", "プレイヤー一覧を公開する", "network"),
     FieldSpec("ChatPostLimitPerMinute", "チャット投稿制限（毎分）", "int", "network", min=0, max=1000, step=1),
     FieldSpec("AllowConnectPlatform", "接続を許可するプラットフォーム", "string", "network"),
@@ -352,7 +366,7 @@ def custom_spec(name: str, ftype: str) -> FieldSpec:
 
 def add_custom_fields(
     items: list[dict[str, Any]], options: dict[str, str]
-) -> tuple[dict[str, str], list[str]]:
+) -> tuple[dict[str, str], list[str], list[str]]:
     """スキーマに無い新しいプロパティを、型を明示して書き足す。
 
     Palworld のアップデートで増えた項目を、この管理ツールの更新を待たずに
@@ -360,6 +374,7 @@ def add_custom_fields(
     """
     updates: dict[str, str] = {}
     errors: list[str] = []
+    warnings: list[str] = []
 
     for item in items:
         name = str(item.get("name", "")).strip()
@@ -381,15 +396,20 @@ def add_custom_fields(
         if error:
             errors.append(error)
             continue
+        warning = range_warning(spec, value)
+        if warning:
+            warnings.append(warning)
         try:
             updates[name] = format_value(spec, value)
         except (TypeError, ValueError):
             errors.append(f"{name}: 値の形式が正しくありません（{value!r}）")
 
-    return updates, errors
+    return updates, errors, warnings
 
 
-def add_fields(values: dict[str, Any], options: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+def add_fields(
+    values: dict[str, Any], options: dict[str, str]
+) -> tuple[dict[str, str], list[str], list[str]]:
     """設定ファイルに無い項目を、新しく書き足すための値を作る。
 
     スキーマに定義がある項目だけ許可する。未知の名前で好き勝手に
@@ -397,6 +417,7 @@ def add_fields(values: dict[str, Any], options: dict[str, str]) -> tuple[dict[st
     """
     updates: dict[str, str] = {}
     errors: list[str] = []
+    warnings: list[str] = []
 
     for name, value in values.items():
         if name in options:
@@ -410,12 +431,15 @@ def add_fields(values: dict[str, Any], options: dict[str, str]) -> tuple[dict[st
         if error:
             errors.append(error)
             continue
+        warning = range_warning(spec, value)
+        if warning:
+            warnings.append(warning)
         try:
             updates[name] = format_value(spec, value)
         except (TypeError, ValueError):
             errors.append(f"{spec.label}: 値の形式が正しくありません（{value!r}）")
 
-    return updates, errors
+    return updates, errors, warnings
 
 _QUOTED = re.compile(r'^"(.*)"$', re.S)
 _INT = re.compile(r"^-?\d+$")
@@ -494,19 +518,46 @@ def format_value(spec: FieldSpec, value: Any) -> str:
 
 
 def validate_value(spec: FieldSpec, value: Any) -> str | None:
-    """範囲や選択肢の検証。問題なければ None を返す。"""
+    """保存を止めるべき問題だけを返す。問題なければ None。
+
+    型と選択肢は守らせる（壊れた値を書くとサーバが起動しなくなる）。
+    数値の範囲は `range_warning` に回す — 下の理由による。
+    """
+    if spec.locked:
+        return (
+            f"{spec.label}（{spec.name}）はこのフォームから変更できません。"
+            "変更すると管理ツールがサーバと通信できなくなるため、"
+            "サーバ設定タブの ini 全文編集から行ってください"
+        )
     if spec.type == "enum" and spec.choices:
         if str(value).strip().strip('"') not in spec.choices:
             return f"{spec.label}: {value!r} は選択肢にありません（{'/'.join(spec.choices)}）"
     if spec.type in ("int", "float"):
         try:
-            number = float(value)
+            float(value)
         except (TypeError, ValueError):
             return f"{spec.label}: 数値を入力してください"
-        if spec.min is not None and number < spec.min:
-            return f"{spec.label}: {spec.min} 以上で指定してください"
-        if spec.max is not None and number > spec.max:
-            return f"{spec.label}: {spec.max} 以下で指定してください"
+    return None
+
+
+def range_warning(spec: FieldSpec, value: Any) -> str | None:
+    """推奨範囲から外れていたら警告文を返す。保存自体は止めない。
+
+    min / max はこちらで決めた目安であって Palworld の仕様ではない。
+    たとえば ServerPlayerMaxNum を 32 より大きくして運用している例があり、
+    ここで弾くと**正しい設定を保存できなくなる**。
+    そこで「弾く」のではなく「知らせる」に留める。
+    """
+    if spec.type not in ("int", "float"):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if spec.min is not None and number < spec.min:
+        return f"{spec.label}: 推奨範囲（{spec.min}〜{spec.max}）を下回っています"
+    if spec.max is not None and number > spec.max:
+        return f"{spec.label}: 推奨範囲（{spec.min}〜{spec.max}）を超えています"
     return None
 
 
@@ -539,14 +590,17 @@ def describe(options: dict[str, str]) -> list[dict[str, Any]]:
     return out
 
 
-def build_updates(values: dict[str, Any], options: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+def build_updates(
+    values: dict[str, Any], options: dict[str, str]
+) -> tuple[dict[str, str], list[str], list[str]]:
     """フォームからの値を ini 文字列に直す。
 
-    戻り値は (更新するキーと ini 文字列, エラー一覧)。
+    戻り値は (更新するキーと ini 文字列, エラー一覧, 警告一覧)。
     ini に存在しないキーは受け付けない（タイプミスで別項目を増やさないため）。
     """
     updates: dict[str, str] = {}
     errors: list[str] = []
+    warnings: list[str] = []
 
     for name, value in values.items():
         if name not in options:
@@ -557,9 +611,12 @@ def build_updates(values: dict[str, Any], options: dict[str, str]) -> tuple[dict
         if error:
             errors.append(error)
             continue
+        warning = range_warning(spec, value)
+        if warning:
+            warnings.append(warning)
         try:
             updates[name] = format_value(spec, value)
         except (TypeError, ValueError):
             errors.append(f"{spec.label}: 値の形式が正しくありません（{value!r}）")
 
-    return updates, errors
+    return updates, errors, warnings

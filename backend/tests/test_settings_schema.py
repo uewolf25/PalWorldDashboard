@@ -11,6 +11,7 @@ from app.settings_schema import (
     format_value,
     infer_spec,
     parse_value,
+    range_warning,
     spec_for,
     validate_value,
 )
@@ -126,10 +127,31 @@ def test_spec_for_prefers_schema_over_inference():
 # ---- 検証 ------------------------------------------------------------------
 
 
-def test_validate_rejects_out_of_range():
-    assert validate_value(FIELDS_BY_NAME["ExpRate"], 999) is not None
-    assert validate_value(FIELDS_BY_NAME["ExpRate"], -1) is not None
-    assert validate_value(FIELDS_BY_NAME["ExpRate"], 2.0) is None
+def test_out_of_range_warns_but_does_not_block():
+    """min/max はこちらで決めた目安なので、保存自体は止めない。
+
+    ServerPlayerMaxNum を 32 より大きくして運用している例があり、
+    弾いてしまうと正しい設定を保存できなくなる。
+    """
+    spec = FIELDS_BY_NAME["ExpRate"]
+    assert validate_value(spec, 999) is None      # 保存は通る
+    assert range_warning(spec, 999) is not None   # ただし警告する
+    assert range_warning(spec, -1) is not None
+    assert range_warning(spec, 2.0) is None
+
+
+def test_locked_fields_are_rejected():
+    """管理ツールが自分を締め出せる項目はフォームから変更させない。"""
+    for name in ("AdminPassword", "RESTAPIEnabled", "RESTAPIPort"):
+        spec = FIELDS_BY_NAME[name]
+        assert spec.locked is True
+        assert "変更できません" in (validate_value(spec, "x") or "")
+
+
+def test_difficulty_is_marked_as_overriding_others():
+    """None 以外にすると個別の倍率設定が無視される（公式仕様）。"""
+    assert FIELDS_BY_NAME["Difficulty"].overrides_others is True
+    assert FIELDS_BY_NAME["ExpRate"].overrides_others is False
 
 
 def test_validate_rejects_unknown_enum_choice():
@@ -144,7 +166,7 @@ def test_validate_rejects_non_numeric():
 def test_build_updates_rejects_keys_not_in_file():
     """タイプミスで存在しない項目を書き足さないこと。"""
     options = {"ExpRate": "1.000000"}
-    updates, errors = build_updates({"ExpRat": 2.0}, options)
+    updates, errors, _ = build_updates({"ExpRat": 2.0}, options)
     assert updates == {}
     assert errors and "存在しない" in errors[0]
 
@@ -336,14 +358,25 @@ async def test_custom_addition_is_validated(full_client, full_ini, bad, reason):
     assert full_ini.read_text() == original
 
 
-async def test_custom_addition_of_a_known_schema_name_uses_the_schema(full_client, full_ini):
+async def test_custom_addition_of_a_known_schema_name_uses_the_schema(full_client):
     """スキーマにある名前を手動追加した場合は、スキーマの検証が効くこと。"""
     resp = await full_client.put(
         "/api/settings-ini/fields",
         json={"custom_additions": [{"name": "ItemWeightRate", "type": "float", "value": 999}]},
     )
+    assert resp.status_code == 200
+    assert any("推奨範囲" in w for w in resp.json()["warnings"])
+
+
+async def test_custom_addition_cannot_bypass_locked_fields(full_client, full_ini):
+    """手動追加の口から locked 項目を書き込めないこと。"""
+    original = full_ini.read_text()
+    resp = await full_client.put(
+        "/api/settings-ini/fields",
+        json={"custom_additions": [{"name": "RESTAPIPort", "type": "int", "value": 9999}]},
+    )
     assert resp.status_code == 400
-    assert "20.0 以下" in resp.json()["detail"]
+    assert full_ini.read_text() == original
 
 
 async def test_fields_endpoint_when_file_missing(settings, pal_client, notifier, tmp_path):
@@ -395,12 +428,41 @@ async def test_update_unknown_key_is_rejected(full_client, full_ini):
     assert full_ini.read_text() == original
 
 
-async def test_update_out_of_range_is_rejected(full_client, full_ini):
-    original = full_ini.read_text()
+async def test_update_out_of_range_warns_but_saves(full_client, full_ini):
     resp = await full_client.put("/api/settings-ini/fields", json={"values": {"ExpRate": 999}})
+    assert resp.status_code == 200
+    assert any("推奨範囲" in w for w in resp.json()["warnings"])
+    assert "ExpRate=999.000000" in full_ini.read_text()
+
+
+async def test_locked_field_cannot_be_changed_from_the_form(full_client, full_ini):
+    """AdminPassword を変えると管理ツールが締め出される。無人の予約反映なら特に危険。"""
+    original = full_ini.read_text()
+    resp = await full_client.put(
+        "/api/settings-ini/fields", json={"values": {"AdminPassword": "newpass"}}
+    )
     assert resp.status_code == 400
-    assert "20.0 以下" in resp.json()["detail"]
+    assert "変更できません" in resp.json()["detail"]
     assert full_ini.read_text() == original
+
+
+async def test_locked_field_cannot_be_scheduled_either(full_client, full_ini):
+    """予約経由でも通さない（気づかないうちに締め出されるのを防ぐ）。"""
+    resp = await full_client.put(
+        "/api/settings-ini/fields",
+        json={"values": {"RESTAPIEnabled": False}, "when": "next_stop"},
+    )
+    assert resp.status_code == 400
+    assert (await full_client.get("/api/settings-ini/pending")).json()["total"] == 0
+
+
+async def test_locked_fields_are_flagged_in_the_form(full_client):
+    body = (await full_client.get("/api/settings-ini/fields")).json()
+    fields = {f["name"]: f for c in body["categories"] for f in c["fields"]}
+    assert fields["AdminPassword"]["locked"] is True
+    assert fields["RESTAPIEnabled"]["locked"] is True
+    assert fields["ExpRate"]["locked"] is False
+    assert fields["Difficulty"]["overrides_others"] is True
 
 
 async def test_update_invalid_enum_is_rejected(full_client, full_ini):
@@ -500,10 +562,20 @@ async def test_added_field_moves_to_configured_list(full_client):
     assert "ItemWeightRate" not in offered
 
 
-async def test_additions_are_validated_like_edits(full_client, full_ini):
-    original = full_ini.read_text()
+async def test_additions_warn_on_range_but_still_save(full_client, full_ini):
     resp = await full_client.put(
         "/api/settings-ini/fields", json={"additions": {"ItemWeightRate": 999}}
+    )
+    assert resp.status_code == 200
+    assert any("推奨範囲" in w for w in resp.json()["warnings"])
+    assert "ItemWeightRate=999.000000" in full_ini.read_text()
+
+
+async def test_additions_reject_invalid_enum(full_client, full_ini):
+    """型や選択肢は引き続き弾く（壊れた値はサーバが起動しなくなる）。"""
+    original = full_ini.read_text()
+    resp = await full_client.put(
+        "/api/settings-ini/fields", json={"additions": {"RandomizerType": "Nope"}}
     )
     assert resp.status_code == 400
     assert full_ini.read_text() == original

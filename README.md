@@ -148,6 +148,10 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 - **予告の失敗でシーケンスを止めない** — アナウンスが届かなくても保存と停止は続行し、失敗は履歴に残す
 - **設定ファイルを壊さない** — `OptionSettings` 行が無い内容は 400 で弾き、書き込みは一時ファイル経由で原子的に置換
 - **消える変更を書かせない** — Palworld が停止時に ini を上書きする仕様のため、稼働中の直接編集は 409 で止め、予約による反映へ誘導する
+- **設定ファイルの所有者を変えない** — 一時ファイル + rename ではなく inode を保ったまま上書きする。置き換えるとゲーム側が停止時に ini を書き戻せなくなる
+- **自分を締め出せないようにする** — `AdminPassword` / `RESTAPIEnabled` / `RESTAPIPort` はフォームから変更不可。無人の予約反映で通信できなくなるのを防ぐ
+- **タイムアウトを失敗と混同しない** — 応答が返らないだけで処理は続いている可能性があるため、中止の文面を分ける
+- **意図的な停止で誤警報を出さない** — シーケンス進行中と起動後の猶予は「応答なし」を通知しない
 - **反映に失敗してもサーバを落としたままにしない** — 設定変更より稼働継続を優先し、保留は残して次の機会に再試行する
 - **ゲームサーバが落ちていても画面は出る** — `/api/status` は常に 200 を返し、`online: false` で表現する
 - **XSS 対策** — 値の描画は必ず `textContent`。`innerHTML` は使わない
@@ -168,12 +172,13 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── monitor.py       定期サンプリングと閾値アラート
 │   │   ├── settings_ini.py  PalWorldSettings.ini の読み書きとバックアップ
 │   │   ├── settings_schema.py 各設定項目の型・範囲・カテゴリ定義
+│   │   ├── cache.py         ゲームサーバへの問い合わせを間引く TTL キャッシュ
 │   │   ├── pending.py       設定変更の予約（保留中の変更）
 │   │   ├── logstream.py     ログの収集と WebSocket 配信
 │   │   ├── notify.py        Discord Webhook
 │   │   └── services.py      ゲームサーバのプロセス制御（systemd / 開発用モック）
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（279件）
+│   ├── tests/               pytest（313件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
@@ -351,6 +356,7 @@ mise run test
 | `test_settings_ini.py` | ini のパース（引用符内カンマ含む）、更新、バックアップ、復元、不正な内容の拒否、パストラバーサル防止 |
 | `test_settings_schema.py` | 項目の型解釈と書式化、未知キーの型推論、範囲/選択肢の検証、フォーム経由の更新 |
 | `test_check_secrets.py` | 秘密情報の検出漏れと誤検知、実際に起きた流出未遂ケース、対象外リストの肥大防止 |
+| `test_hardening.py` | 実機投入前に潰したリスク（タイムアウト分離、停止待ち、inode 保持、sudo、誤警報抑止、キャッシュ） |
 | `test_pending.py` | 稼働中の保存、停止シーケンスでの自動反映、予約への紐づけ、反映失敗時の復旧、永続化 |
 | `test_scheduler.py` | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
 | `test_monitor.py` | メトリクス記録、メモリ閾値アラートと cooldown、サーバ up/down 検知、ログ配信 |

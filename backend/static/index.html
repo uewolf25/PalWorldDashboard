@@ -128,6 +128,8 @@ textarea { width: 100%; min-height: 320px; font-family: ui-monospace, "SF Mono",
 .tag-unknown { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: #3a3018; color: var(--warn); }
 .tag-changed { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: var(--accent); color: #08131f; }
 .tag-added { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: var(--ok); color: #06180f; }
+.tag-locked { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: var(--panel2); color: var(--crit); border: 1px solid #5a2a2a; }
+.warnbox.small { font-size: 12px; padding: 8px 10px; }
 .setting.muted-card { border-style: dashed; opacity: .85; }
 .setting.muted-card .title { font-weight: 500; }
 
@@ -1141,6 +1143,8 @@ function renderGameSettings(root) {
   }
 
   function setEdit(name, value) {
+    const spec = specs.get(name);
+    if (spec && spec.spec.locked) return;   // 念のため二重で止める
     // 新規追加した項目は、元の値が無いので常に「変更あり」として持つ
     if (customs.has(name)) { customs.get(name).value = value; paint(); return; }
     if (additions.has(name)) { additions.set(name, value); paint(); return; }
@@ -1225,6 +1229,16 @@ function renderGameSettings(root) {
   function buildControl(f) {
     const current = currentValue(f);
 
+    // 変更すると管理ツールがサーバと通信できなくなる項目は編集させない。
+    // 予約反映と組み合わさると、無人のまま締め出されることになる
+    if (f.locked) {
+      const shown = el("input", {
+        type: "text", value: f.secret ? "********" : String(current), readonly: "readonly",
+      });
+      shown.style.opacity = ".6";
+      return shown;
+    }
+
     if (f.type === "bool") {
       // 有効/無効はプルダウンで選ぶ
       const sel = el("select", null, [
@@ -1275,6 +1289,18 @@ function renderGameSettings(root) {
     return el("div", { class: "ctl" }, [input, toggle]);
   }
 
+  // 推奨範囲を外れていたら知らせる。min/max は仕様ではなく目安なので止めはしない
+  function rangeNote(f) {
+    if (f.type !== "int" && f.type !== "float") return null;
+    const v = Number(currentValue(f));
+    if (!Number.isFinite(v)) return null;
+    const low = f.min !== null && f.min !== undefined && v < f.min;
+    const high = f.max !== null && f.max !== undefined && v > f.max;
+    if (!low && !high) return null;
+    return el("div", { class: "muted small", style: "color:var(--warn)",
+      text: `推奨範囲（${f.min}〜${f.max}）を${low ? "下回っています" : "超えています"}。保存はできます。` });
+  }
+
   function buildCard(f) {
     const isNew = additions.has(f.name) || customs.has(f.name);
     const changed = isChanged(f.name);
@@ -1285,12 +1311,21 @@ function renderGameSettings(root) {
           el("div", { class: "name", text: f.name }),
         ]),
         el("div", { class: "row" }, [
+          f.locked ? el("span", { class: "tag-locked", text: "変更不可" }) : null,
           !f.known ? el("span", { class: "tag-unknown", text: "未知" }) : null,
           isNew ? el("span", { class: "tag-added", text: "新規追加" })
                 : (changed ? el("span", { class: "tag-changed", text: "変更" }) : null),
         ]),
       ]),
       buildControl(f),
+      // 難易度を None 以外にすると個別の倍率設定が無視される（公式仕様）
+      f.overrides_others && String(currentValue(f)) !== "None"
+        ? el("div", { class: "warnbox small", style: "margin-top:2px",
+            text: "この設定が有効な間、経験値倍率や捕獲率などの個別設定は無視されます。"
+                + "個別に調整したい場合は None を選んでください。" })
+        : null,
+      // 推奨範囲はこちらで決めた目安。外れていても保存はできる
+      rangeNote(f),
       isNew ? el("div", { class: "row small" }, [
         el("span", { class: "muted", text: "設定ファイルに新しく書き足します" }),
         el("button", { class: "btn small", text: "やめる", onclick: () => removeAddition(f.name) }),
@@ -1564,6 +1599,7 @@ function renderGameSettings(root) {
         } else {
           toast("保存しました（バックアップ: " + r.backup + "）。サーバを起動すると反映されます", "ok");
         }
+        for (const w of (r.warnings || [])) toast(w, "err");
         edits.clear();
         additions.clear();
         customs.clear();

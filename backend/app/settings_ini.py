@@ -14,8 +14,8 @@ OptionSettings は1行に全部入った独自形式なので、素の configpar
 from __future__ import annotations
 
 import logging
+import os
 import re
-import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -160,20 +160,20 @@ class SettingsIniStore:
         return out
 
     def write_text(self, text: str) -> BackupInfo:
-        """全文を差し替える。書き込み前にバックアップを取り、原子的に置換する。"""
+        """全文を差し替える。書き込み前に必ずバックアップを取る。"""
         if SECTION not in text:
             raise SettingsIniError(f"{SECTION} セクションがありません")
         if not _has_option_line(text):
             raise SettingsIniError("OptionSettings 行がありません")
         info = self.backup()
-        self._atomic_write(text)
+        self._write(text)
         return info
 
     def update_options(self, updates: dict[str, str]) -> BackupInfo:
         text = self.read_text()
         new_text = apply_options(text, updates)
         info = self.backup()
-        self._atomic_write(new_text)
+        self._write(new_text)
         return info
 
     def restore(self, name: str) -> None:
@@ -182,12 +182,33 @@ class SettingsIniStore:
         if src.parent.resolve() != self.backup_dir.resolve() or not src.is_file():
             raise SettingsIniError(f"バックアップが見つかりません: {name}")
         self.backup()  # 復元前の状態も残す
-        self._atomic_write(src.read_text(encoding="utf-8"))
+        self._write(src.read_text(encoding="utf-8"))
 
-    def _atomic_write(self, text: str) -> None:
-        tmp = self.ini_path.with_suffix(self.ini_path.suffix + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        shutil.move(str(tmp), str(self.ini_path))
+    def _write(self, text: str) -> None:
+        """設定ファイルを書き換える。
+
+        既存ファイルは **inode を保ったまま上書きする**（open("w") で truncate）。
+        一時ファイルを作って rename すると別 inode に置き換わり、
+        所有者・グループ・パーミッションが書き込んだプロセスのものになる。
+        Palworld が steam ユーザ、管理ツールが palmanager ユーザという構成だと、
+        一度書いた時点でゲーム側が停止時に ini を書き戻せなくなる。
+        chmod / chown での復元はファイルの所有者でないと効かないので、
+        そもそも置き換えない方が確実。
+
+        rename を使わないぶん原子性は落ちるが、直前に必ずバックアップを取っており、
+        書き込むのはサーバ停止中の小さなファイル1つなので、この取り引きの方がよい。
+
+        新規作成のときだけは既存の属性が無いので、そのまま作る。
+        """
+        if self.ini_path.exists():
+            with self.ini_path.open("w", encoding="utf-8") as fh:
+                fh.write(text)
+                fh.flush()
+                os.fsync(fh.fileno())
+            return
+
+        self.ini_path.parent.mkdir(parents=True, exist_ok=True)
+        self.ini_path.write_text(text, encoding="utf-8")
 
 
 def _has_option_line(text: str) -> bool:

@@ -11,7 +11,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from typing import Any
+from typing import Any, Callable
 
 import psutil
 
@@ -47,6 +47,10 @@ class Monitor:
         self._task: asyncio.Task | None = None
         self._last_alert_at: dict[str, float] = {}
         self._last_online: bool | None = None
+        # この時刻までは「応答なし」を通知しない（意図的に落としている間）
+        self._suppress_until: float = 0.0
+        # 再起動シーケンスなどが進行中かを尋ねるフック
+        self._maintenance: Callable[[], bool] | None = None
 
     # ---- サンプリング --------------------------------------------------
 
@@ -93,6 +97,26 @@ class Monitor:
         await self._check_alerts(record)
         return record
 
+    # ---- メンテナンス中の抑止 ------------------------------------------
+
+    def set_maintenance_probe(self, probe: Callable[[], bool]) -> None:
+        """再起動シーケンスなどが進行中かを尋ねるフックを登録する。"""
+        self._maintenance = probe
+
+    def suppress_downtime_alerts(self, seconds: float) -> None:
+        """この先 seconds 秒は「応答なし」を通知しない。
+
+        systemctl start はプロセスを起こした時点で返るが、実機の Palworld が
+        接続を受け付けるまでは数十秒かかる。その間の「応答なし」は誤報で、
+        毎回の再起動で飛ぶと本物の障害通知が埋もれる。
+        """
+        self._suppress_until = max(self._suppress_until, time.time() + max(seconds, 0.0))
+
+    def _downtime_suppressed(self, now: float) -> bool:
+        if now < self._suppress_until:
+            return True
+        return bool(self._maintenance and self._maintenance())
+
     # ---- アラート ------------------------------------------------------
 
     def _cooldown_passed(self, key: str, now: float) -> bool:
@@ -104,7 +128,12 @@ class Monitor:
 
         # サーバの上下動（状態が変わった瞬間だけ通知する）
         online = bool(record["online"])
-        if self._last_online is None:
+        if self._downtime_suppressed(now):
+            # 意図的に落としている最中。_last_online をあえて更新しないので、
+            # 抑止が明けてもまだ落ちていれば、そこで初めて通知が飛ぶ。
+            # 抑止中に復帰していれば状態が変わらないまま終わり、何も飛ばない
+            pass
+        elif self._last_online is None:
             self._last_online = online
         elif online != self._last_online:
             self._last_online = online

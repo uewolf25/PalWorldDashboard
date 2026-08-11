@@ -53,31 +53,58 @@ class GameService(Protocol):
 
 
 class SystemdService:
-    """systemctl でゲームサーバのユニットを操作する（本番）。"""
+    """systemctl でゲームサーバのユニットを操作する（本番）。
 
-    def __init__(self, unit: str, *, dry_run: bool = False, timeout: float = 60.0) -> None:
+    管理ツールは専用ユーザ（palmanager など）で動くのが普通なので、
+    そのままでは systemctl を実行できない。sudoers で必要な操作だけ許可し、
+    use_sudo=True にして `sudo -n systemctl ...` として呼ぶ。
+
+    `-n` は必須。付けないとパスワード待ちでプロセスが固まり、
+    再起動シーケンスがタイムアウトするまで止まる。
+    """
+
+    def __init__(
+        self,
+        unit: str,
+        *,
+        dry_run: bool = False,
+        timeout: float = 60.0,
+        use_sudo: bool = False,
+    ) -> None:
         self.unit = unit
         self.dry_run = dry_run
         self.timeout = timeout
+        self.use_sudo = use_sudo
 
     @property
     def available(self) -> bool:
-        return shutil.which("systemctl") is not None
+        if shutil.which("systemctl") is None:
+            return False
+        if self.use_sudo and shutil.which("sudo") is None:
+            return False
+        return True
+
+    def _command(self, args: tuple[str, ...]) -> list[str]:
+        # -n: パスワードを聞かれたら待たずに失敗する
+        prefix = ["sudo", "-n"] if self.use_sudo else []
+        return [*prefix, "systemctl", *args]
 
     async def _run(self, *args: str) -> CommandResult:
+        cmd = self._command(args)
+        printable = " ".join(cmd)
+
         if self.dry_run or not self.available:
             reason = "dry_run" if self.dry_run else "systemctl が無い環境"
-            logger.info("systemctl %s をスキップ (%s)", " ".join(args), reason)
+            logger.info("%s をスキップ (%s)", printable, reason)
             return CommandResult(
                 ok=True,
                 returncode=0,
-                stdout=f"[simulated] systemctl {' '.join(args)}",
+                stdout=f"[simulated] {printable}",
                 stderr="",
                 simulated=True,
             )
         proc = await asyncio.create_subprocess_exec(
-            "systemctl",
-            *args,
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -85,12 +112,21 @@ class SystemdService:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except asyncio.TimeoutError:
             proc.kill()
-            return CommandResult(False, -1, "", f"systemctl {' '.join(args)} がタイムアウトしました")
+            return CommandResult(False, -1, "", f"{printable} がタイムアウトしました")
+
+        stderr = err.decode(errors="replace").strip()
+        # sudoers の設定漏れは原因が分かりにくいので、そうと分かる形にする
+        if proc.returncode != 0 and "password is required" in stderr:
+            stderr = (
+                f"{stderr}\n"
+                "sudoers でこの操作が許可されていません。"
+                "/etc/sudoers.d/dashboard-Pal に NOPASSWD で登録してください。"
+            )
         return CommandResult(
             ok=proc.returncode == 0,
             returncode=proc.returncode or 0,
             stdout=out.decode(errors="replace").strip(),
-            stderr=err.decode(errors="replace").strip(),
+            stderr=stderr,
         )
 
     async def restart(self) -> CommandResult:
@@ -225,6 +261,7 @@ def build_service(
     unit: str,
     dry_run: bool,
     mock_control_url: str,
+    use_sudo: bool = False,
 ) -> GameService:
     if backend == "mock":
         logger.info("ゲームサーバの制御にモックバックエンドを使います: %s", mock_control_url)
@@ -232,4 +269,4 @@ def build_service(
     if backend == "simulated":
         logger.info("ゲームサーバの制御を空回しします（simulated）")
         return SimulatedService(unit)
-    return SystemdService(unit, dry_run=dry_run)
+    return SystemdService(unit, dry_run=dry_run, use_sudo=use_sudo)
