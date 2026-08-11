@@ -30,7 +30,7 @@ from .restart import (
 from .scheduler import RestartScheduler, ScheduleError
 from .services import SystemdService
 from .settings_ini import SettingsIniError, SettingsIniStore
-from .settings_schema import CATEGORIES, build_updates, describe
+from .settings_schema import CATEGORIES, add_fields, build_updates, describe, missing_fields
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +76,14 @@ class RestoreBody(BaseModel):
 
 
 class SettingsFieldsBody(BaseModel):
-    """フォームから来た項目単位の値。ini への書式化はサーバ側で行う。"""
+    """フォームから来た項目単位の値。ini への書式化はサーバ側で行う。
 
-    values: dict[str, Any] = Field(min_length=1)
+    values    : 既に設定ファイルにある項目の変更
+    additions : 設定ファイルに無い項目の追加（明示操作でのみ送られる）
+    """
+
+    values: dict[str, Any] = Field(default_factory=dict)
+    additions: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScheduleBody(BaseModel):
@@ -506,6 +511,9 @@ def create_app(
             "exists": True,
             "path": str(cfg.pal_settings_ini),
             "categories": describe(options),
+            # 設定ファイルに書かれていない項目。ゲーム側の既定値で動いているので、
+            # 変えたいならユーザーが明示的に追加する
+            "available": missing_fields(options),
             "category_labels": [{"key": k, "label": v} for k, v in CATEGORIES],
         }
 
@@ -515,33 +523,40 @@ def create_app(
         if not ini_store.exists():
             raise HTTPException(404, f"設定ファイルが見つかりません: {cfg.pal_settings_ini}")
 
+        if not body.values and not body.additions:
+            raise HTTPException(400, "更新する項目がありません")
+
         options = ini_store.read_options()
         updates, errors = build_updates(body.values, options)
+        added, add_errors = add_fields(body.additions, options)
+        errors += add_errors
         if errors:
             raise HTTPException(400, " / ".join(errors))
-        if not updates:
-            raise HTTPException(400, "更新する項目がありません")
 
         # 値が変わっていないものは書かない（無駄なバックアップを増やさない）
         changed = {k: v for k, v in updates.items() if options.get(k) != v}
+        changed.update(added)
         if not changed:
-            return {"result": "unchanged", "changed": {}, "restart_required": False}
+            return {"result": "unchanged", "changed": {}, "added": [], "restart_required": False}
 
         try:
             backup = ini_store.update_options(changed)
         except SettingsIniError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+        detail = "変更: " + ", ".join(f"{k}={v}" for k, v in changed.items())
+        if added:
+            detail += "\n（うち新規追加: " + ", ".join(added) + "）"
         await notify.send(
             "サーバ設定を更新しました",
-            "変更: " + ", ".join(f"{k}={v}" for k, v in changed.items())
-            + f"\nバックアップ: {backup.name}\n反映にはサーバの再起動が必要です。",
+            detail + f"\nバックアップ: {backup.name}\n反映にはサーバの再起動が必要です。",
             "info",
         )
         return {
             "result": "ok",
             "backup": backup.name,
             "changed": changed,
+            "added": sorted(added),
             "restart_required": True,
         }
 

@@ -254,7 +254,9 @@ async def test_update_invalid_enum_is_rejected(full_client, full_ini):
 
 
 async def test_update_requires_values(full_client):
-    assert (await full_client.put("/api/settings-ini/fields", json={"values": {}})).status_code == 422
+    resp = await full_client.put("/api/settings-ini/fields", json={"values": {}})
+    assert resp.status_code == 400
+    assert "更新する項目がありません" in resp.json()["detail"]
 
 
 async def test_unchanged_values_do_not_create_backup(full_client):
@@ -283,6 +285,116 @@ async def test_update_notifies_discord_with_diff(full_client, notifier):
     await full_client.put("/api/settings-ini/fields", json={"values": {"ExpRate": 2.0}})
     sent = [n for n in notifier.sent if n["title"] == "サーバ設定を更新しました"]
     assert sent and "ExpRate=2.000000" in sent[-1]["description"]
+
+
+# ---- 設定ファイルに無い項目の追加 ------------------------------------------
+
+
+async def test_missing_fields_are_offered_separately(full_client):
+    """ファイルに無いスキーマ項目は available として別枠で返る。"""
+    body = (await full_client.get("/api/settings-ini/fields")).json()
+
+    configured = {f["name"] for c in body["categories"] for f in c["fields"]}
+    offered = {f["name"] for c in body["available"] for f in c["fields"]}
+
+    assert "ExpRate" in configured
+    assert "ItemWeightRate" in offered      # スキーマにあるがファイルには無い
+    assert not (configured & offered)       # 両方には出ない
+
+
+async def test_offered_fields_carry_game_default(full_client):
+    body = (await full_client.get("/api/settings-ini/fields")).json()
+    offered = {f["name"]: f for c in body["available"] for f in c["fields"]}
+
+    # 公式の既定値が分かっているもの
+    assert offered["bEnableInvaderEnemy"]["default"] is True
+    assert offered["bEnableInvaderEnemy"]["default_known"] is True
+    assert offered["GuildPlayerMaxNum"]["default"] == 20
+
+    # 裏取りできていないものは既定値を主張しない
+    assert offered["ItemWeightRate"]["default_known"] is False
+    assert offered["ItemWeightRate"]["default"] is None
+
+
+async def test_add_missing_field_writes_it_to_the_file(full_client, full_ini):
+    resp = await full_client.put(
+        "/api/settings-ini/fields",
+        json={"additions": {"ItemWeightRate": 0.5, "bEnableInvaderEnemy": False}},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body["added"]) == {"ItemWeightRate", "bEnableInvaderEnemy"}
+
+    text = full_ini.read_text()
+    assert "ItemWeightRate=0.500000" in text
+    assert "bEnableInvaderEnemy=False" in text
+    # 既存の項目は壊れていない
+    assert "ExpRate=1.000000" in text
+    assert 'ServerName="Test, Server"' in text
+
+
+async def test_added_field_moves_to_configured_list(full_client):
+    await full_client.put("/api/settings-ini/fields", json={"additions": {"ItemWeightRate": 0.5}})
+
+    body = (await full_client.get("/api/settings-ini/fields")).json()
+    configured = {f["name"] for c in body["categories"] for f in c["fields"]}
+    offered = {f["name"] for c in body["available"] for f in c["fields"]}
+
+    assert "ItemWeightRate" in configured
+    assert "ItemWeightRate" not in offered
+
+
+async def test_additions_are_validated_like_edits(full_client, full_ini):
+    original = full_ini.read_text()
+    resp = await full_client.put(
+        "/api/settings-ini/fields", json={"additions": {"ItemWeightRate": 999}}
+    )
+    assert resp.status_code == 400
+    assert full_ini.read_text() == original
+
+
+async def test_cannot_add_a_field_that_already_exists(full_client):
+    resp = await full_client.put("/api/settings-ini/fields", json={"additions": {"ExpRate": 2.0}})
+    assert resp.status_code == 400
+    assert "すでに" in resp.json()["detail"]
+
+
+async def test_cannot_add_an_unknown_field_name(full_client, full_ini):
+    """タイプミスで知らないキーを増やせないこと。"""
+    original = full_ini.read_text()
+    resp = await full_client.put(
+        "/api/settings-ini/fields", json={"additions": {"ExpRaet": 2.0}}
+    )
+    assert resp.status_code == 400
+    assert "把握していない" in resp.json()["detail"]
+    assert full_ini.read_text() == original
+
+
+async def test_edit_and_add_in_one_request(full_client, full_ini):
+    resp = await full_client.put(
+        "/api/settings-ini/fields",
+        json={"values": {"ExpRate": 3.0}, "additions": {"ItemWeightRate": 2.0}},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["added"] == ["ItemWeightRate"]
+
+    text = full_ini.read_text()
+    assert "ExpRate=3.000000" in text
+    assert "ItemWeightRate=2.000000" in text
+
+
+async def test_empty_request_is_rejected(full_client):
+    resp = await full_client.put("/api/settings-ini/fields", json={"values": {}, "additions": {}})
+    assert resp.status_code == 400
+
+
+async def test_nothing_is_added_without_explicit_request(full_client, full_ini):
+    """値の変更だけを送ったとき、未設定の項目が勝手に書き足されないこと。"""
+    from app.settings_ini import parse_options
+
+    before = set(parse_options(full_ini.read_text()))
+    await full_client.put("/api/settings-ini/fields", json={"values": {"ExpRate": 2.0}})
+    assert set(parse_options(full_ini.read_text())) == before
 
 
 async def test_form_and_raw_editor_stay_consistent(full_client, full_ini):

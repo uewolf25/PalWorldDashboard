@@ -48,12 +48,17 @@ UI も API も一通り動作確認できる。
 - 保存前に**変更点の一覧（変更前 → 変更後）をモーダルで確認**。変更した項目だけを書き戻す
 - 値が変わっていなければ書き込まない（無駄なバックアップを増やさない）
 
+**設定ファイルに書かれていない項目も設定できる。** Palworld は未記載の項目を内蔵の既定値で動かすため、
+`bIsPvP` を有効にしたいのにファイルに行が無い、ということが起きる。
+そうした項目は「未設定の項目」として別枠に出し、**「追加」を押したものだけ**書き足す。
+黙って書き足さないのは、ゲーム側の既定値が変わったときに追従できなくなるため。
+公式の既定値が確認できている項目はそれを初期値として提示し、裏取りできていない項目は
+「既定値は未確認」と明示する（推測値を既定値として出すと事故になる）。
+
 **Palworld の更新で項目が増えても壊れない。** スキーマに無いキーは ini 上の値から
 型を推論して「未知」バッジ付きで編集できるようにしてある。
 知らない項目を UI から消してしまうと保存時に消滅するのが一番まずいので、そこは必ず通す。
-
-なお `settings_schema.py` のスキーマに定義があっても、**実際のファイルに無いキーは表示も追加もしない**。
-勝手に書き足すと、ゲーム側の既定値が変わったときに追従できなくなるため。
+ただし**追加**できるのはスキーマに定義がある項目だけ（タイプミスで妙なキーを増やさないため）。
 
 ### Discord 通知
 
@@ -99,7 +104,7 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── notify.py        Discord Webhook
 │   │   └── services.py      systemd ユニット操作
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（147件）
+│   ├── tests/               pytest（157件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
@@ -167,11 +172,51 @@ curl 'http://127.0.0.1:8080/api/announcements?limit=20'
 # ゲーム設定をフォーム定義として取得
 curl http://127.0.0.1:8080/api/settings-ini/fields
 
-# 項目を指定して更新（書式化と検証はサーバ側で行う）
+# 既存項目の変更（書式化と検証はサーバ側で行う）
 curl -XPUT http://127.0.0.1:8080/api/settings-ini/fields \
   -H 'Content-Type: application/json' \
   -d '{"values":{"ExpRate":2.5,"bIsPvP":true,"Difficulty":"Hard"}}'
+
+# ファイルに無い項目の追加（additions は明示指定でのみ書き足される）
+curl -XPUT http://127.0.0.1:8080/api/settings-ini/fields \
+  -H 'Content-Type: application/json' \
+  -d '{"additions":{"ItemWeightRate":0.5}}'
 ```
+
+## 設定ファイル（.env）の置き場所
+
+アプリは**環境変数しか見ない**（`config.py` が `os.environ` を読むだけ）。
+ファイルから環境変数への読み込みは、開発なら `dev.sh`、本番なら systemd が担当する。
+
+| ファイル | 用途 | git | 権限 | 読む人 |
+|----------|------|-----|------|--------|
+| `dashboard-Pal.env.example` | **見本。キーと説明だけで値は空** | 追跡する | 644 | 人間 |
+| `.dev/local.env` | **開発用の秘密情報** | 追跡しない | 600 | `dev.sh` |
+| `/etc/dashboard-Pal.env` | **本番の全設定** | サーバ上にのみ存在 | 600 root:root | systemd |
+
+### どこに何を書くか
+
+| 書きたいもの | 開発 | 本番 |
+|--------------|------|------|
+| Discord Webhook URL、各種パスワード | `.dev/local.env` | `/etc/dashboard-Pal.env` |
+| ポート、パス、予告間隔などの非秘密設定 | `scripts/dev.sh`（既に設定済み。変えたいときだけ `.dev/local.env` で上書き） | `/etc/dashboard-Pal.env` |
+| 新しい環境変数を増やしたとき | 上記に加えて `dashboard-Pal.env.example` に**キーと説明だけ**追記 | 同左 |
+
+**`*.env.example` に実際の値を書かないこと。** git に追跡されているので、
+Webhook URL やパスワードを書くとそのままリポジトリに載る。
+値の要る場所は `.dev/local.env` か `/etc/dashboard-Pal.env` のどちらかしかない。
+
+```bash
+# 開発用の秘密情報を置く（.dev/ は .gitignore 済み）
+cat > .dev/local.env <<'EOF'
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+DISCORD_ALERT_WEBHOOK_URL=https://discord.com/api/webhooks/...
+EOF
+chmod 600 .dev/local.env
+```
+
+`dev.sh` は自分の `export` を済ませたあとに `.dev/local.env` を読む。
+つまり `local.env` に書いた値が優先される（`PAL_ENV` などの上書きも可能）。
 
 ## テスト
 

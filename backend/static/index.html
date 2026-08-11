@@ -127,6 +127,9 @@ textarea { width: 100%; min-height: 320px; font-family: ui-monospace, "SF Mono",
 .setting .ctl button { flex: 0 0 auto; }
 .tag-unknown { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: #3a3018; color: var(--warn); }
 .tag-changed { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: var(--accent); color: #08131f; }
+.tag-added { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: var(--ok); color: #06180f; }
+.setting.muted-card { border-style: dashed; opacity: .85; }
+.setting.muted-card .title { font-weight: 500; }
 
 .savebar {
   position: sticky; bottom: 0; margin-top: 16px; z-index: 10;
@@ -1091,19 +1094,27 @@ function renderGameSettings(root) {
 
   const catbar = el("div", { class: "catbar" });
   const grid = el("div", { class: "fieldgrid" });
+  const availableBox = el("div");
   const savebar = el("div", { class: "savebar" });
+  let showAvailable = false;
   root.appendChild(catbar);
   root.appendChild(grid);
+  root.appendChild(availableBox);
   root.appendChild(savebar);
 
   // name -> { spec, original }
   const specs = new Map();
   // name -> 編集後の値（元の値と同じになったら削除する）
   const edits = new Map();
+  // 設定ファイルに無い項目を、明示操作で追加したぶん: name -> 値
+  const additions = new Map();
+  // 追加できる項目（ファイル未記載）: name -> field
+  const availableByName = new Map();
   let categories = [];
+  let available = [];
   let activeCat = "__all__";
 
-  function isChanged(name) { return edits.has(name); }
+  function isChanged(name) { return edits.has(name) || additions.has(name); }
 
   function displayValue(spec, value) {
     if (spec.type === "bool") return value ? "有効" : "無効";
@@ -1113,6 +1124,8 @@ function renderGameSettings(root) {
   }
 
   function setEdit(name, value) {
+    // 新規追加した項目は、元の値が無いので常に「変更あり」として持つ
+    if (additions.has(name)) { additions.set(name, value); paint(); return; }
     const entry = specs.get(name);
     // 数値は型を揃えてから比較する（"1.0" と 1 を別物にしない）
     const same = entry.spec.type === "int" || entry.spec.type === "float"
@@ -1122,9 +1135,25 @@ function renderGameSettings(root) {
     paint();
   }
 
+  function addField(f) {
+    additions.set(f.name, f.value);
+    paint();
+  }
+
+  function removeAddition(name) {
+    additions.delete(name);
+    paint();
+  }
+
   // --- 入力コントロール ---
+  function currentValue(f) {
+    if (additions.has(f.name)) return additions.get(f.name);
+    if (edits.has(f.name)) return edits.get(f.name);
+    return f.value;
+  }
+
   function buildControl(f) {
-    const current = edits.has(f.name) ? edits.get(f.name) : f.value;
+    const current = currentValue(f);
 
     if (f.type === "bool") {
       // 有効/無効はプルダウンで選ぶ
@@ -1177,8 +1206,9 @@ function renderGameSettings(root) {
   }
 
   function buildCard(f) {
+    const isNew = additions.has(f.name);
     const changed = isChanged(f.name);
-    const card = el("div", { class: "setting" + (changed ? " changed" : "") }, [
+    return el("div", { class: "setting" + (changed ? " changed" : "") }, [
       el("div", { class: "head" }, [
         el("div", null, [
           el("div", { class: "title", text: f.label }),
@@ -1186,11 +1216,15 @@ function renderGameSettings(root) {
         ]),
         el("div", { class: "row" }, [
           !f.known ? el("span", { class: "tag-unknown", text: "未知" }) : null,
-          changed ? el("span", { class: "tag-changed", text: "変更" }) : null,
+          isNew ? el("span", { class: "tag-added", text: "新規追加" })
+                : (changed ? el("span", { class: "tag-changed", text: "変更" }) : null),
         ]),
       ]),
       buildControl(f),
-      changed ? el("div", { class: "row small" }, [
+      isNew ? el("div", { class: "row small" }, [
+        el("span", { class: "muted", text: "設定ファイルに新しく書き足します" }),
+        el("button", { class: "btn small", text: "やめる", onclick: () => removeAddition(f.name) }),
+      ]) : changed ? el("div", { class: "row small" }, [
         el("span", { class: "muted", text: "元: " + displayValue(f, specs.get(f.name).original) }),
         el("button", {
           class: "btn small", text: "戻す",
@@ -1198,17 +1232,55 @@ function renderGameSettings(root) {
         }),
       ]) : (f.help ? el("div", { class: "help", text: f.help }) : null),
     ]);
-    return card;
+  }
+
+  // 設定ファイルに書かれていない項目のカード（追加ボタン付き）
+  function buildAvailableCard(f) {
+    return el("div", { class: "setting muted-card" }, [
+      el("div", { class: "head" }, [
+        el("div", null, [
+          el("div", { class: "title", text: f.label }),
+          el("div", { class: "name", text: f.name }),
+        ]),
+        el("button", { class: "btn small", text: "追加", onclick: () => addField(f) }),
+      ]),
+      el("div", { class: "help", text: f.default_known
+        ? "未設定（ゲーム側の既定値 " + displayValue(f, f.default) + " で動作中）"
+        : "未設定（既定値は未確認。追加すると " + displayValue(f, f.value) + " で書き込まれます）" }),
+    ]);
+  }
+
+  function matches(f) {
+    const q = search.value.trim().toLowerCase();
+    if (activeCat !== "__all__" && f.category !== activeCat) return false;
+    if (!q) return true;
+    return f.name.toLowerCase().includes(q) || f.label.toLowerCase().includes(q);
   }
 
   function visibleFields() {
-    const q = search.value.trim().toLowerCase();
     const out = [];
+    // 追加したものは一覧の先頭に出す（今どこを触っているか見失わないように）
+    for (const [name] of additions) {
+      const f = availableByName.get(name);
+      if (f && matches(f)) out.push(f);
+    }
     for (const cat of categories) {
-      if (activeCat !== "__all__" && cat.key !== activeCat) continue;
       for (const f of cat.fields) {
         if (onlyChanged.checked && !isChanged(f.name)) continue;
-        if (q && !(f.name.toLowerCase().includes(q) || f.label.toLowerCase().includes(q))) continue;
+        if (!matches(f)) continue;
+        out.push(f);
+      }
+    }
+    return out;
+  }
+
+  // まだ追加していない未設定項目
+  function availableFields() {
+    const out = [];
+    for (const cat of available) {
+      for (const f of cat.fields) {
+        if (additions.has(f.name)) continue;
+        if (!matches(f)) continue;
         out.push(f);
       }
     }
@@ -1231,14 +1303,17 @@ function renderGameSettings(root) {
 
   function paintSavebar() {
     clear(savebar);
-    const n = edits.size;
-    savebar.appendChild(el("strong", { text: n ? n + " 件の変更" : "変更なし" }));
+    const n = edits.size + additions.size;
+    const label = n
+      ? n + " 件の変更" + (additions.size ? "（新規追加 " + additions.size + "）" : "")
+      : "変更なし";
+    savebar.appendChild(el("strong", { text: label }));
     savebar.appendChild(el("span", { class: "muted small",
       text: n ? "保存するとサーバ再起動後に反映されます" : "項目を編集すると差分がここに出ます" }));
     savebar.appendChild(el("div", { style: "flex:1" }));
     savebar.appendChild(el("button", {
       class: "btn", text: "変更を破棄", disabled: n ? null : "disabled",
-      onclick: () => { edits.clear(); paint(); },
+      onclick: () => { edits.clear(); additions.clear(); paint(); },
     }));
     savebar.appendChild(el("button", {
       class: "btn primary", text: "変更を保存", disabled: n ? null : "disabled",
@@ -1254,41 +1329,82 @@ function renderGameSettings(root) {
       grid.appendChild(el("div", { class: "panel muted", text: "該当する項目がありません" }));
     }
     for (const f of fields) grid.appendChild(buildCard(f));
+
+    // --- 設定ファイルに書かれていない項目 ---
+    clear(availableBox);
+    const rest = availableFields();
+    if (rest.length) {
+      const head = el("div", { class: "row", style: "margin:22px 0 8px" }, [
+        el("h2", { style: "margin:0", text: "未設定の項目（" + rest.length + "）" }),
+        el("button", {
+          class: "btn small", text: showAvailable ? "隠す" : "表示する",
+          onclick: () => { showAvailable = !showAvailable; paint(); },
+        }),
+      ]);
+      availableBox.appendChild(head);
+      availableBox.appendChild(el("div", { class: "muted small", style: "margin-bottom:10px",
+        text: "設定ファイルに書かれていない項目です。ゲーム側の既定値で動作しています。"
+            + "値を変えたい項目だけ「追加」してください（追加した項目だけが書き足されます）。" }));
+      if (showAvailable) {
+        const g = el("div", { class: "fieldgrid" });
+        for (const f of rest) g.appendChild(buildAvailableCard(f));
+        availableBox.appendChild(g);
+      }
+    }
     paintSavebar();
+  }
+
+  function diffRow(label, name, beforeText, afterText) {
+    return el("div", { class: "row2" }, [
+      el("div", null, [
+        el("div", { text: label }),
+        el("div", { class: "name muted small", text: name }),
+      ]),
+      el("span", { class: "muted", text: "→" }),
+      el("div", null, [
+        el("div", { class: "before", text: beforeText }),
+        el("div", { class: "after", text: afterText }),
+      ]),
+    ]);
   }
 
   function openSaveModal() {
     const list = el("div", { class: "difflist" });
     for (const [name, value] of edits) {
       const { spec, original } = specs.get(name);
-      list.appendChild(el("div", { class: "row2" }, [
-        el("div", null, [
-          el("div", { text: spec.label }),
-          el("div", { class: "name muted small", text: name }),
-        ]),
-        el("span", { class: "muted", text: "→" }),
-        el("div", null, [
-          el("div", { class: "before", text: displayValue(spec, original) }),
-          el("div", { class: "after", text: displayValue(spec, value) }),
-        ]),
-      ]));
+      list.appendChild(diffRow(spec.label, name, displayValue(spec, original), displayValue(spec, value)));
     }
+    for (const [name, value] of additions) {
+      const f = availableByName.get(name);
+      const before = f.default_known
+        ? "未設定（既定 " + displayValue(f, f.default) + "）" : "未設定";
+      list.appendChild(diffRow(f.label + "（新規追加）", name, before, displayValue(f, value)));
+    }
+
+    const n = edits.size + additions.size;
     openModal({
-      title: edits.size + " 件の設定を変更します",
+      title: n + " 件の設定を変更します",
       lead: "上書き前に自動でバックアップを取ります。反映にはサーバの再起動が必要です。",
       danger: true,
       confirmLabel: "保存する",
-      body: [list],
+      body: [
+        additions.size ? el("div", { class: "warnbox",
+          text: additions.size + " 件は設定ファイルに新しく書き足されます。"
+              + "以降はゲーム側の既定値ではなく、ここで指定した値が使われます。" }) : null,
+        list,
+      ],
       async onConfirm() {
-        const values = {};
+        const values = {}, adds = {};
         for (const [name, value] of edits) values[name] = value;
-        const r = await put("/api/settings-ini/fields", { values });
+        for (const [name, value] of additions) adds[name] = value;
+        const r = await put("/api/settings-ini/fields", { values, additions: adds });
         if (r.result === "unchanged") {
           toast("変更点がなかったため保存しませんでした");
         } else {
           toast("保存しました（バックアップ: " + r.backup + "）", "ok");
         }
         edits.clear();
+        additions.clear();
         await load();
       },
     });
@@ -1308,7 +1424,9 @@ function renderGameSettings(root) {
     }
 
     categories = data.categories;
+    available = data.available || [];
     specs.clear();
+    availableByName.clear();
     let total = 0;
     for (const cat of categories) {
       for (const f of cat.fields) {
@@ -1316,7 +1434,12 @@ function renderGameSettings(root) {
         total++;
       }
     }
-    pathInfo.textContent = data.path + "  （" + total + " 項目）";
+    let rest = 0;
+    for (const cat of available) {
+      for (const f of cat.fields) { availableByName.set(f.name, f); rest++; }
+    }
+    pathInfo.textContent = data.path + "  （設定済み " + total + " 項目"
+      + (rest ? " / 未設定 " + rest + " 項目" : "") + "）";
     paint();
   }
 

@@ -192,6 +192,143 @@ FIELDS: list[FieldSpec] = [
 
 FIELDS_BY_NAME: dict[str, FieldSpec] = {f.name: f for f in FIELDS}
 
+# 公式の DefaultPalWorldSettings.ini に載っている既定値。
+# ファイルに書かれていない項目を追加するとき、初期値としてこれを提示する。
+#
+# ここに載せるのは既定値が確認できたものだけ。新しめの項目（RESTAPIEnabled など）は
+# 手元で裏取りできていないので、あえて空けてある。推測値を「既定値」として
+# 出すと、それを信じて追加した結果ゲーム側の挙動が変わる事故になるため。
+DEFAULTS: dict[str, Any] = {
+    "Difficulty": "None",
+    "DayTimeSpeedRate": 1.0,
+    "NightTimeSpeedRate": 1.0,
+    "ExpRate": 1.0,
+    "PalCaptureRate": 1.0,
+    "PalSpawnNumRate": 1.0,
+    "PalDamageRateAttack": 1.0,
+    "PalDamageRateDefense": 1.0,
+    "PlayerDamageRateAttack": 1.0,
+    "PlayerDamageRateDefense": 1.0,
+    "PlayerStomachDecreaceRate": 1.0,
+    "PlayerStaminaDecreaceRate": 1.0,
+    "PlayerAutoHPRegeneRate": 1.0,
+    "PlayerAutoHpRegeneRateInSleep": 1.0,
+    "PalStomachDecreaceRate": 1.0,
+    "PalStaminaDecreaceRate": 1.0,
+    "PalAutoHPRegeneRate": 1.0,
+    "PalAutoHpRegeneRateInSleep": 1.0,
+    "BuildObjectDamageRate": 1.0,
+    "BuildObjectDeteriorationDamageRate": 1.0,
+    "CollectionDropRate": 1.0,
+    "CollectionObjectHpRate": 1.0,
+    "CollectionObjectRespawnSpeedRate": 1.0,
+    "EnemyDropItemRate": 1.0,
+    "DeathPenalty": "All",
+    "bEnablePlayerToPlayerDamage": False,
+    "bEnableFriendlyFire": False,
+    "bEnableInvaderEnemy": True,
+    "bActiveUNKO": False,
+    "bEnableAimAssistPad": True,
+    "bEnableAimAssistKeyboard": False,
+    "DropItemMaxNum": 3000,
+    "DropItemMaxNum_UNKO": 100,
+    "BaseCampMaxNum": 128,
+    "BaseCampWorkerMaxNum": 15,
+    "DropItemAliveMaxHours": 1.0,
+    "bAutoResetGuildNoOnlinePlayers": False,
+    "AutoResetGuildTimeNoOnlinePlayers": 72.0,
+    "GuildPlayerMaxNum": 20,
+    "PalEggDefaultHatchingTime": 72.0,
+    "WorkSpeedRate": 1.0,
+    "bIsMultiplay": False,
+    "bIsPvP": False,
+    "bCanPickupOtherGuildDeathPenaltyDrop": False,
+    "bEnableNonLoginPenalty": True,
+    "bEnableFastTravel": True,
+    "bIsStartLocationSelectByMap": True,
+    "bExistPlayerAfterLogout": False,
+    "bEnableDefenseOtherGuildPlayer": False,
+    "CoopPlayerMaxNum": 4,
+    "ServerPlayerMaxNum": 32,
+    "ServerName": "Default Palworld Server",
+    "ServerDescription": "",
+    "AdminPassword": "",
+    "ServerPassword": "",
+    "PublicPort": 8211,
+    "PublicIP": "",
+    "RCONEnabled": False,
+    "RCONPort": 25575,
+    "Region": "",
+    "bUseAuth": True,
+    "BanListURL": "https://api.palworldgame.com/api/banlist.txt",
+}
+
+# 既定値が分からない項目を追加するときの、型ごとの初期値
+_NEUTRAL: dict[str, Any] = {"bool": False, "int": 0, "float": 1.0, "enum": "", "string": ""}
+
+
+def initial_value(spec: FieldSpec) -> Any:
+    """未設定の項目を追加するときに、フォームへ最初に入れる値。"""
+    if spec.name in DEFAULTS:
+        return DEFAULTS[spec.name]
+    if spec.type == "enum" and spec.choices:
+        return spec.choices[0]
+    return _NEUTRAL.get(spec.type, "")
+
+
+def missing_fields(options: dict[str, str]) -> list[dict[str, Any]]:
+    """スキーマにはあるが、設定ファイルに書かれていない項目。
+
+    Palworld は未記載の項目に内蔵の既定値を使う。つまり「書かれていない」＝
+    「既定値で動いている」なので、値を変えたいなら追記する必要がある。
+    ただし追記は必ずユーザーの明示操作で行う（下の add_fields を参照）。
+    """
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for spec in FIELDS:
+        if spec.name in options:
+            continue
+        item = spec.as_dict()
+        item["value"] = initial_value(spec)
+        item["default"] = DEFAULTS.get(spec.name)
+        item["default_known"] = spec.name in DEFAULTS
+        buckets.setdefault(spec.category, []).append(item)
+
+    out: list[dict[str, Any]] = []
+    for key, label in CATEGORIES:
+        items = buckets.get(key, [])
+        if items:
+            out.append({"key": key, "label": label, "fields": items})
+    return out
+
+
+def add_fields(values: dict[str, Any], options: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """設定ファイルに無い項目を、新しく書き足すための値を作る。
+
+    スキーマに定義がある項目だけ許可する。未知の名前で好き勝手に
+    キーを増やせると、タイプミスが黙って通ってしまうため。
+    """
+    updates: dict[str, str] = {}
+    errors: list[str] = []
+
+    for name, value in values.items():
+        if name in options:
+            errors.append(f"{name}: すでに設定ファイルに存在します")
+            continue
+        spec = FIELDS_BY_NAME.get(name)
+        if spec is None:
+            errors.append(f"{name}: この管理ツールが把握していない項目のため追加できません")
+            continue
+        error = validate_value(spec, value)
+        if error:
+            errors.append(error)
+            continue
+        try:
+            updates[name] = format_value(spec, value)
+        except (TypeError, ValueError):
+            errors.append(f"{spec.label}: 値の形式が正しくありません（{value!r}）")
+
+    return updates, errors
+
 _QUOTED = re.compile(r'^"(.*)"$', re.S)
 _INT = re.compile(r"^-?\d+$")
 _FLOAT = re.compile(r"^-?\d+\.\d+$")
@@ -302,6 +439,8 @@ def describe(options: dict[str, str]) -> list[dict[str, Any]]:
         item = spec.as_dict()
         item["value"] = parse_value(spec, raw)
         item["raw"] = raw
+        item["default"] = DEFAULTS.get(name)
+        item["default_known"] = name in DEFAULTS
         buckets.setdefault(spec.category, []).append(item)
 
     out: list[dict[str, Any]] = []
