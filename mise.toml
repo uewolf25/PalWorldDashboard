@@ -14,8 +14,19 @@ node = "24"
 _.python.venv = { path = "backend/.venv", create = true }
 
 [tasks.setup]
-description = "依存パッケージをインストールする"
-run = "pip install -r backend/requirements-dev.txt"
+description = "依存パッケージのインストールと git フックの有効化"
+run = """
+pip install -r backend/requirements-dev.txt
+# 秘密情報チェックの pre-commit フックを有効にする。
+# .githooks は git 管理下なので、この設定さえすれば全員に配れる
+git config core.hooksPath .githooks
+chmod +x .githooks/* scripts/check_secrets.py
+echo "git フックを有効にしました (core.hooksPath=.githooks)"
+"""
+
+[tasks.check-secrets]
+description = "秘密情報が混入していないか調べる"
+run = "python3 scripts/check_secrets.py"
 
 [tasks.test]
 description = "テストを実行する"

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# コミット直前に、ステージされたファイルへ秘密情報が混入していないか調べる。
+#
+# このフックは core.hooksPath 経由で有効になる（git 管理下なので全員に配れる）。
+#   git config core.hooksPath .githooks
+# mise run setup が自動で設定する。
+#
+# 緊急時は git commit --no-verify で回避できるが、
+# *.env.example に値を書きたい状況はまず無いはずなので、その前に一度考えること。
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+# ステージされた「追加・変更・リネーム後」のファイルだけを見る。
+# 削除したファイルを渡すと存在しないパスになるので除外する。
+#
+# mapfile は bash 4 以降。macOS の bash は 3.2 なので使えない。
+# 空白入りのファイル名も壊さないよう NUL 区切りで読む。
+STAGED=()
+while IFS= read -r -d '' file; do
+  STAGED+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if [ ${#STAGED[@]} -eq 0 ]; then
+  exit 0
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "pre-commit: python3 が見つからないため秘密情報チェックを飛ばします" >&2
+  exit 0
+fi
+
+if ! python3 "$ROOT/scripts/check_secrets.py" --root "$ROOT" "${STAGED[@]}"; then
+  echo "" >&2
+  echo "コミットを中止しました。" >&2
+  echo "どうしても通す必要がある場合は git commit --no-verify（非推奨）" >&2
+  exit 1
+fi
