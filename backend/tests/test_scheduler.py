@@ -202,7 +202,7 @@ async def test_scheduled_fire_triggers_restart(app, mock_state):
     await app.state.restart.wait()
 
     assert app.state.restart.status.phase == "done"
-    assert "スケジュール(テスト)" in app.state.restart.status.reason
+    assert "予約: テスト" in app.state.restart.status.reason
     assert mock_state.saves == 1
 
 
@@ -433,3 +433,37 @@ async def test_schedules_with_actions_survive_a_reload(client, settings, pal_cli
         assert entries[0]["action"] == "start"
     finally:
         fresh.state.scheduler.shutdown()
+
+
+# ---- 予約名の表示（Issue #14） ---------------------------------------------
+
+
+def test_describe_spec_is_readable():
+    """メモを付けていない予約は spec がそのまま名前になる。
+
+    once の ISO 文字列がそのまま通知に出ると読みにくいので整える。
+    """
+    from app.scheduler import describe_spec
+
+    assert describe_spec("once", "2026-08-12T01:00:00") == "2026-08-12 01:00"
+    assert describe_spec("daily", "04:00") == "毎日 04:00"
+    assert describe_spec("cron", "0 4 * * *") == "cron 0 4 * * *"
+    # 壊れた値でも落ちない
+    assert describe_spec("once", "こわれた") == "こわれた"
+
+
+async def test_reason_uses_the_readable_form(app, mock_state):
+    """メモ無しの単発予約でも、理由が読める形で出ること。"""
+    from datetime import datetime, timedelta
+
+    scheduler = app.state.scheduler
+    when = (datetime.now() + timedelta(days=1)).replace(second=0, microsecond=0)
+    created = scheduler.add("once", when.isoformat(), **ANNOUNCE_KW)
+
+    await scheduler._fire(created["id"])
+    await app.state.restart.wait()
+
+    reason = app.state.restart.status.reason
+    assert reason.startswith("予約: ")
+    assert "T" not in reason          # ISO のままにしない
+    assert when.strftime("%Y-%m-%d %H:%M") in reason

@@ -250,7 +250,8 @@ async def test_discord_gets_start_and_finish_only(client, app, notifier, mock_st
     await app.state.restart.wait()
 
     titles = [n["title"] for n in notifier.sent]
-    assert "サーバー再起動を開始します" in titles
+    # 予告の時点では「これから実行する」と分かる文面にする（Issue #14）
+    assert any(t.startswith("【予告】") and "再起動します" in t for t in titles)
     assert "サーバー再起動が完了しました" in titles
     # ゲーム内には3回予告したが、Discord は2通だけ
     assert len(mock_state.announcements) == 3
@@ -273,3 +274,74 @@ def test_humanize(seconds, expected):
     from app.restart import humanize
 
     assert humanize(seconds) == expected
+
+
+# ---- 通知の文面（Issue #14） -----------------------------------------------
+
+
+async def _advance_notice(notifier):
+    """予告の Discord 通知が出るまで待って、それを返す。
+
+    シーケンスは背景タスクなので、送信前に読むと取りこぼす。
+    保存の通知などが先に混ざることもあるので、索引ではなく内容で拾う。
+    """
+    await _wait_for(lambda: any(
+        n["title"].startswith("【予告】") or n["title"].startswith("サーバーを")
+        for n in notifier.sent
+    ))
+    return next(n for n in notifier.sent
+                if n["title"].startswith("【予告】") or n["title"].startswith("サーバーを"))
+
+
+async def test_advance_notice_says_when_not_now(client, app, notifier):
+    """予告の時点で「開始します」と書くと、今落ちると受け取られる。
+
+    実際に落ちるのは予告リードぶん後なので、いつ実行されるのかを主語にする。
+    """
+    await client.post("/api/restart", json=restart_body(notice_offsets=[300, 60]))
+    title = (await _advance_notice(notifier))["title"]
+
+    assert title == "【予告】5分後にサーバーを再起動します"
+    assert "開始します" not in title
+
+    app.state.restart.cancel()
+    await app.state.restart.wait()
+
+
+async def test_advance_notice_for_stop_uses_the_right_verb(client, app, notifier):
+    await client.post("/api/shutdown", json={
+        "announce_message": "{time}後に停止します", "notice_offsets": [60],
+    })
+    assert (await _advance_notice(notifier))["title"] == "【予告】1分後にサーバーを停止します"
+
+    app.state.restart.cancel()
+    await app.state.restart.wait()
+
+
+async def test_advance_notice_mentions_cancellability(client, app, notifier):
+    await client.post("/api/restart", json=restart_body(notice_offsets=[60]))
+    assert "キャンセルできます" in (await _advance_notice(notifier))["description"]
+
+    app.state.restart.cancel()
+    await app.state.restart.wait()
+
+
+async def test_immediate_run_does_not_claim_a_lead_time(client, app, notifier):
+    """予告ゼロ秒のときに「0秒後に」と書かない。"""
+    await client.post("/api/restart", json=restart_body(notice_offsets=[0]))
+    await app.state.restart.wait()
+
+    assert (await _advance_notice(notifier))["title"] == "サーバーを再起動します"
+
+
+async def test_advance_notice_mentions_pending_settings(client, app, notifier):
+    """このタイミングで設定が反映されることを予告に含める。"""
+    await client.put("/api/settings-ini/fields", json={
+        "values": {"ExpRate": 2.0}, "when": "next_stop",
+    })
+    await client.post("/api/restart", json=restart_body(notice_offsets=[60]))
+
+    assert "設定変更 1 件を反映します" in (await _advance_notice(notifier))["description"]
+
+    app.state.restart.cancel()
+    await app.state.restart.wait()
