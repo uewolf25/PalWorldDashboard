@@ -27,7 +27,7 @@ from .restart import (
     RestartManager,
     RestartValidationError,
 )
-from .scheduler import RestartScheduler, ScheduleError
+from .scheduler import ACTION_LABELS, ACTIONS, ScheduleError, ServerScheduler
 from .services import build_service
 from .settings_ini import SettingsIniError, SettingsIniStore
 from .settings_schema import (
@@ -109,12 +109,20 @@ class SettingsFieldsBody(BaseModel):
 
 
 class ScheduleBody(BaseModel):
+    """サーバ状態変更の予約。
+
+    action が restart / stop のときはアナウンス文と予告タイミングが必須
+    （無告知でサーバを落とさないため）。start は停止中のサーバに
+    アナウンスを送れないので不要。必須判定はスケジューラ側で行う。
+    """
+
     kind: str
     spec: str
     label: str = ""
     enabled: bool = True
-    announce_message: str = Field(min_length=1, max_length=500)
-    notice_offsets: list[float] = Field(min_length=1)
+    action: str = "restart"
+    announce_message: str = Field("", max_length=500)
+    notice_offsets: list[float] = Field(default_factory=list)
 
 
 class SchedulePatchBody(BaseModel):
@@ -122,6 +130,7 @@ class SchedulePatchBody(BaseModel):
     spec: str | None = None
     label: str | None = None
     enabled: bool | None = None
+    action: str | None = None
     announce_message: str | None = None
     notice_offsets: list[float] | None = None
 
@@ -183,8 +192,10 @@ def create_app(
         debounce_sec=cfg.restart_debounce_sec,
         shutdown_waittime=cfg.restart_shutdown_wait,
     )
-    scheduler = RestartScheduler(
+    scheduler = ServerScheduler(
         restart_manager,
+        service,
+        announcer,
         timezone=cfg.schedule_timezone,
         store_path=cfg.schedule_store,
     )
@@ -651,7 +662,11 @@ def create_app(
 
     @app.get("/api/schedules", dependencies=auth)
     async def list_schedules() -> dict[str, Any]:
-        return {"schedules": scheduler.list(), "timezone": cfg.schedule_timezone}
+        return {
+            "schedules": scheduler.list(),
+            "timezone": cfg.schedule_timezone,
+            "actions": [{"value": a, "label": ACTION_LABELS[a]} for a in ACTIONS],
+        }
 
     @app.post("/api/schedules", dependencies=auth)
     async def add_schedule(body: ScheduleBody) -> dict[str, Any]:
@@ -663,6 +678,7 @@ def create_app(
                 body.enabled,
                 announce_message=body.announce_message,
                 notice_offsets=body.notice_offsets,
+                action=body.action,
             )
         except ScheduleError as exc:
             raise HTTPException(400, str(exc)) from exc

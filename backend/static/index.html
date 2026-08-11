@@ -488,7 +488,7 @@ const VIEWS = [
   { id: "history", name: "稼働履歴", render: renderHistory },
   { id: "settings", name: "サーバ設定", render: renderSettings },
   { id: "gamesettings", name: "ゲーム設定", render: renderGameSettings },
-  { id: "schedules", name: "再起動予約", render: renderSchedules },
+  { id: "schedules", name: "スケジュール", render: renderSchedules },
   { id: "logs", name: "ログ", render: renderLogs },
 ];
 
@@ -1701,10 +1701,19 @@ function specPicker(initialKind, initialSpec, onKindChange) {
   };
 }
 
+const ACTION_LABELS = { restart: "再起動", stop: "停止", start: "起動" };
+
 function renderSchedules(root) {
-  root.appendChild(el("h1", { text: "再起動予約" }));
+  root.appendChild(el("h1", { text: "スケジュール" }));
   const tzInfo = el("div", { class: "muted", style: "margin-bottom:12px" });
   root.appendChild(tzInfo);
+  root.appendChild(el("div", { class: "infobox", style: "margin-bottom:14px" }, [
+    el("div", { text: "サーバの起動 / 停止 / 再起動を予約できます。" }),
+    el("div", { class: "muted small", style: "margin-top:4px",
+      text: "設定ファイルを変更したい場合は「停止」と「起動」を別々に予約してメンテ枠を作り、"
+          + "停止が完了してからゲーム設定タブで編集してください"
+          + "（サーバは停止時に設定ファイルを上書きするため、停止前の編集は失われます）。" }),
+  ]));
 
   root.appendChild(el("div", { class: "row", style: "margin-bottom:16px" }, [
     el("button", { class: "btn primary", text: "＋ 予約を追加", onclick: () => openScheduleModal(null, load) }),
@@ -1714,47 +1723,78 @@ function renderSchedules(root) {
   root.appendChild(list);
 
   function openScheduleModal(existing, onDone) {
+    // 何をするか。起動だけは予告を伴わない
+    const action = el("select", null, [
+      el("option", { value: "restart", text: "再起動（予告 → 保存 → 停止 → 起動）" }),
+      el("option", { value: "stop", text: "停止（予告 → 保存 → 停止）" }),
+      el("option", { value: "start", text: "起動（即時。予告なし）" }),
+    ]);
+    action.value = (existing && existing.action) || "restart";
+
     // 種別を切り替えたら注意書きも切り替える
     const specHint = el("div", { class: "muted small" });
     function updateHint(kind) {
-      specHint.textContent = kind === "cron"
-        ? "cron はその時刻から予告が始まるため、実際の再起動は予告リードぶん後になります。"
-        : "指定時刻ちょうどに再起動されるよう、予告はその手前から始まります。";
+      const verb = ACTION_LABELS[action.value] || "実行";
+      specHint.textContent = action.value === "start"
+        ? "指定時刻に起動します。予告が無いので時刻どおりに実行されます。"
+        : kind === "cron"
+          ? `cron はその時刻から予告が始まるため、実際の${verb}は予告リードぶん後になります。`
+          : `指定時刻ちょうどに${verb}されるよう、予告はその手前から始まります。`;
     }
     const picker = specPicker(existing && existing.kind, existing && existing.spec, updateHint);
     const label = el("input", { type: "text", placeholder: "メモ（任意）", value: (existing && existing.label) || "" });
+
+    const isStop = action.value === "stop";
     const fields = announceFields({
       message: (existing && existing.announce_message)
-        || (state.config && state.config.restart_announce_template) || "",
+        || (state.config && (isStop ? state.config.stop_announce_template
+                                    : state.config.restart_announce_template)) || "",
       offsets: (existing && existing.notice_offsets)
         || (state.config && state.config.notice_offsets) || [300, 60, 30],
     });
 
+    // 起動のときはアナウンス欄を隠す（送る相手がいない）
+    const announceBox = el("div", null, fields.nodes);
+    const startNote = el("div", { class: "infobox", style: "display:none",
+      text: "停止中のサーバにはアナウンスを送れないため、起動の予約に予告はありません。" });
+    function syncAction() {
+      const start = action.value === "start";
+      announceBox.style.display = start ? "none" : "";
+      startNote.style.display = start ? "" : "none";
+      updateHint(picker.kind);
+    }
+    action.addEventListener("change", syncAction);
+
     openModal({
-      title: existing ? "予約を編集します" : "再起動予約を追加します",
-      lead: "指定した時刻に再起動します。予告アナウンスは、その手前から順に流れます。",
+      title: existing ? "予約を編集します" : "予約を追加します",
+      lead: "指定した時刻にサーバの状態を変更します。",
       confirmLabel: existing ? "更新する" : "追加する",
       body: [
+        field("動作", action),
         field("繰り返し方", picker.kindNode),
         el("div", { class: "field" }, [
           el("label", { text: "日時" }), picker.specNode, specHint,
         ]),
         field("メモ", label),
-      ].concat(fields.nodes),
+        startNote,
+        announceBox,
+      ],
       validate() {
-        return picker.validate() || fields.validate();
+        const err = picker.validate();
+        if (err) return err;
+        return action.value === "start" ? null : fields.validate();
       },
       async onConfirm() {
-        const payload = Object.assign(
-          { kind: picker.kind, spec: picker.spec(), label: label.value.trim() },
-          fields.payload()
-        );
+        const payload = { kind: picker.kind, spec: picker.spec(),
+                          label: label.value.trim(), action: action.value };
+        if (action.value !== "start") Object.assign(payload, fields.payload());
         if (existing) await patch("/api/schedules/" + existing.id, payload);
         else await post("/api/schedules", payload);
         toast(existing ? "予約を更新しました" : "予約を追加しました", "ok");
         if (onDone) onDone();
       },
     });
+    syncAction();
   }
 
   async function load() {
@@ -1770,20 +1810,23 @@ function renderSchedules(root) {
     const wrap = el("div", { class: "tablewrap" });
     const table = el("table");
     table.appendChild(el("thead", null, el("tr", null,
-      ["種別", "指定", "メモ", "予告", "次回再起動", "状態", ""].map(h => el("th", { text: h })))));
+      ["動作", "繰り返し", "指定", "メモ", "予告", "次回実行", "状態", ""].map(h => el("th", { text: h })))));
     const tbody = el("tbody");
     for (const s of data.schedules) {
       const offsets = s.notice_offsets && s.notice_offsets.length
         ? s.notice_offsets.map(offsetLabel).join(" / ") : "既定";
       tbody.appendChild(el("tr", null, [
+        el("td", null, el("strong", { text: s.action_label || ACTION_LABELS[s.action] || s.action })),
         el("td", { text: { daily: "毎日", once: "単発", cron: "cron" }[s.kind] || s.kind }),
         el("td", { text: s.spec }),
         el("td", { text: s.label || "-" }),
-        el("td", null, [
-          el("div", { class: "small", text: offsets }),
-          el("div", { class: "muted small", text: s.announce_message || "既定の文面" }),
-        ]),
-        el("td", { text: fmtTime(s.next_restart_at) }),
+        s.announced
+          ? el("td", null, [
+              el("div", { class: "small", text: offsets }),
+              el("div", { class: "muted small", text: s.announce_message || "既定の文面" }),
+            ])
+          : el("td", { class: "muted small", text: "予告なし" }),
+        el("td", { text: fmtTime(s.next_action_at) }),
         el("td", { text: s.enabled ? "有効" : "無効", class: s.enabled ? "" : "muted" }),
         el("td", null, el("div", { class: "row" }, [
           el("button", { class: "btn", text: "編集", onclick: () => openScheduleModal(s, load) }),
