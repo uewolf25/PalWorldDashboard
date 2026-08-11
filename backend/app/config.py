@@ -61,7 +61,12 @@ class Settings:
     pal_port: int = field(default_factory=lambda: _env_int("PAL_PORT", 8212))
     pal_admin_user: str = field(default_factory=lambda: _env("PAL_ADMIN_USER", "admin"))
     pal_admin_password: str = field(default_factory=lambda: _env("PAL_ADMIN_PASSWORD", ""))
+    # 参照系（info / metrics / players / settings）のタイムアウト。
+    # ダッシュボードが 1 秒ごとに叩くので短くしておく
     pal_timeout: float = field(default_factory=lambda: _env_float("PAL_TIMEOUT", 5.0))
+    # 実行系（save / shutdown / stop）のタイムアウト。
+    # 実機のワールド保存は数十秒かかることがあるため長めに取る
+    pal_slow_timeout: float = field(default_factory=lambda: _env_float("PAL_SLOW_TIMEOUT", 120.0))
 
     # --- この管理ツール自身 ---
     app_host: str = field(default_factory=lambda: _env("APP_HOST", "0.0.0.0"))
@@ -80,6 +85,11 @@ class Settings:
     )
     pal_mock_control_url: str = field(
         default_factory=lambda: _env("PAL_MOCK_CONTROL_URL", "http://127.0.0.1:8212")
+    )
+    # 専用ユーザで動かす場合、systemctl は sudo 経由でないと実行できない。
+    # sudoers に NOPASSWD で登録したうえで true にする
+    pal_systemctl_sudo: bool = field(
+        default_factory=lambda: _env_bool("PAL_SYSTEMCTL_SUDO", False)
     )
 
     # --- 設定ファイル ---
@@ -115,6 +125,15 @@ class Settings:
     restart_shutdown_wait: int = field(
         default_factory=lambda: _env_int("RESTART_SHUTDOWN_WAIT", 10)
     )
+    # 上の待ち時間を過ぎてから、実際にサーバが落ちるのを待つ猶予（秒）。
+    # ワールド保存に時間がかかるので、ここを短くすると保存中に停止処理へ進んでしまう
+    restart_shutdown_grace: float = field(
+        default_factory=lambda: _env_float("RESTART_SHUTDOWN_GRACE", 120.0)
+    )
+    # 再起動後、サーバが起動しきるまで「応答なし」を通知しない時間（秒）
+    restart_alert_grace: float = field(
+        default_factory=lambda: _env_float("RESTART_ALERT_GRACE", 180.0)
+    )
     # 直前に再起動した直後は受け付けない秒数
     restart_debounce_sec: float = field(
         default_factory=lambda: _env_float("RESTART_DEBOUNCE_SEC", 60.0)
@@ -148,6 +167,10 @@ class Settings:
         )
     )
     pending_limit: int = field(default_factory=lambda: _env_int("PAL_PENDING_LIMIT", 50))
+
+    # ゲームサーバへの問い合わせをまとめる秒数。
+    # 画面のタブを何枚開いても、この間隔以上には問い合わせが増えない
+    status_cache_sec: float = field(default_factory=lambda: _env_float("STATUS_CACHE_SEC", 1.0))
 
     # --- 監視 ---
     monitor_interval: float = field(default_factory=lambda: _env_float("MONITOR_INTERVAL", 30.0))

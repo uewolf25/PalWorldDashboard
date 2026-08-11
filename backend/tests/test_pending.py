@@ -325,9 +325,17 @@ async def test_failed_apply_is_notified(client2, full_ini, notifier):
 
 async def test_pending_is_validated_at_save_time(client2):
     """保存の時点で弾く（反映時まで気づかないと困る）。"""
-    resp = await client2.put("/api/settings-ini/fields", json=stage(ExpRate=999))
+    resp = await client2.put("/api/settings-ini/fields", json=stage(Difficulty="Nope"))
     assert resp.status_code == 400
     assert (await client2.get("/api/settings-ini/pending")).json()["total"] == 0
+
+
+async def test_pending_warns_on_range_but_is_accepted(client2):
+    """範囲は目安なので、警告しつつ予約は受け付ける。"""
+    resp = await client2.put("/api/settings-ini/fields", json=stage(ExpRate=999))
+    assert resp.status_code == 200
+    assert any("推奨範囲" in w for w in resp.json()["warnings"])
+    assert (await client2.get("/api/settings-ini/pending")).json()["total"] == 1
 
 
 # ---- 取り消しと即時反映 ----------------------------------------------------

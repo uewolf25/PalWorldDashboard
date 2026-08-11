@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .announce import AnnouncementLog, Announcer
+from .cache import TTLCache
 from .config import Settings, load_settings
 from .logstream import BrokerLogHandler, LogBroker
 from .monitor import Monitor
@@ -172,6 +173,7 @@ def create_app(
         cfg.pal_admin_user,
         cfg.pal_admin_password,
         timeout=cfg.pal_timeout,
+        slow_timeout=cfg.pal_slow_timeout,
     )
     notify = notifier or DiscordNotifier(cfg.discord_webhook_url, cfg.discord_alert_webhook_url)
     service = build_service(
@@ -179,6 +181,7 @@ def create_app(
         unit=cfg.pal_service_name,
         dry_run=cfg.dry_run,
         mock_control_url=cfg.pal_mock_control_url,
+        use_sudo=cfg.pal_systemctl_sudo,
     )
     ini_store = SettingsIniStore(cfg.pal_settings_ini, cfg.backup_dir, keep=cfg.backup_keep)
     monitor = Monitor(
@@ -190,6 +193,11 @@ def create_app(
         mem_crit_percent=cfg.mem_crit_percent,
         alert_cooldown_sec=cfg.alert_cooldown_sec,
     )
+    # ゲームサーバへの問い合わせを間引く。画面のタブ数に比例して
+    # 負荷が増えないよう、TTL 内は結果を使い回し、同時アクセスは合流させる
+    status_cache: TTLCache[dict[str, Any]] = TTLCache(cfg.status_cache_sec)
+    players_cache: TTLCache[list[dict[str, Any]]] = TTLCache(cfg.status_cache_sec)
+
     announce_log = AnnouncementLog(cfg.announce_store, limit=cfg.announce_history_limit)
     announcer = Announcer(pal, notify, announce_log)
     pending = PendingChangeStore(cfg.pending_store, limit=cfg.pending_limit)
@@ -228,9 +236,15 @@ def create_app(
         announce_template=cfg.restart_announce_template,
         debounce_sec=cfg.restart_debounce_sec,
         shutdown_waittime=cfg.restart_shutdown_wait,
+        shutdown_grace=cfg.restart_shutdown_grace,
         apply_pending=apply_pending_changes,
         count_pending=lambda sid: len(pending.due_for(sid)),
+        # 意図的に落としている間は「応答なし」を通知しない
+        suppress_alerts=monitor.suppress_downtime_alerts,
+        alert_grace=cfg.restart_alert_grace,
     )
+    # シーケンス進行中も同様に抑止する（猶予の計算に取りこぼしがあっても効くように）
+    monitor.set_maintenance_probe(lambda: restart_manager.in_progress)
     scheduler = ServerScheduler(
         restart_manager,
         service,
@@ -290,6 +304,8 @@ def create_app(
     app.state.announcer = announcer
     app.state.announce_log = announce_log
     app.state.pending = pending
+    app.state.status_cache = status_cache
+    app.state.players_cache = players_cache
     app.state.restart = restart_manager
     app.state.scheduler = scheduler
     app.state.broker = broker
@@ -352,19 +368,24 @@ def create_app(
     async def get_config() -> dict[str, Any]:
         return cfg.public_dict()
 
+    async def _fetch_status() -> dict[str, Any]:
+        """ゲームサーバへの問い合わせ部分だけ。キャッシュの対象。"""
+        try:
+            return {"online": True, "error": None,
+                    "info": await pal.info(), "metrics": await pal.metrics()}
+        except PalApiError as exc:
+            return {"online": False, "error": str(exc), "info": {}, "metrics": {}}
+
     @app.get("/api/status", dependencies=auth)
     async def get_status() -> dict[str, Any]:
-        """ダッシュボードが1秒ごとに叩く。ゲームサーバが落ちていても 200 を返す。"""
-        online = True
-        error: str | None = None
-        info: dict[str, Any] = {}
-        metrics: dict[str, Any] = {}
-        try:
-            info = await pal.info()
-            metrics = await pal.metrics()
-        except PalApiError as exc:
-            online = False
-            error = str(exc)
+        """ダッシュボードが1秒ごとに叩く。ゲームサーバが落ちていても 200 を返す。
+
+        画面のタブを何枚開いてもゲームサーバへの問い合わせが増えないよう、
+        ここだけ短時間キャッシュする。ホスト側の統計は安いのでそのまま取る。
+        """
+        upstream = await status_cache.get(_fetch_status)
+        online, error = upstream["online"], upstream["error"]
+        info, metrics = upstream["info"], upstream["metrics"]
 
         host = monitor._host_stats()
         return {
@@ -394,7 +415,8 @@ def create_app(
 
     @app.get("/api/players", dependencies=auth)
     async def get_players() -> dict[str, Any]:
-        players = await pal.players()
+        # プレイヤータブとワールドタブが同時に見るので、ここも合流させる
+        players = await players_cache.get(pal.players)
         return {"players": players, "count": len(players)}
 
     @app.post("/api/players/kick", dependencies=auth)
@@ -402,6 +424,7 @@ def create_app(
         if cfg.dry_run:
             return {"result": "skipped", "reason": "dry_run", "userid": body.userid}
         await pal.kick(body.userid, body.message)
+        players_cache.invalidate()   # 消えた直後に古い一覧を見せない
         await notify.send("プレイヤーをキックしました", f"{body.userid}\n{body.message}", "warn")
         return {"result": "ok", "userid": body.userid}
 
@@ -410,6 +433,7 @@ def create_app(
         if cfg.dry_run:
             return {"result": "skipped", "reason": "dry_run", "userid": body.userid}
         await pal.ban(body.userid, body.message)
+        players_cache.invalidate()
         await notify.send("プレイヤーをBANしました", f"{body.userid}\n{body.message}", "warn")
         return {"result": "ok", "userid": body.userid}
 
@@ -425,7 +449,7 @@ def create_app(
         REST API はパル/NPC の位置を公開していないため、
         ここで返すのはプレイヤーの座標と異常検知のみ。
         """
-        players = await pal.players()
+        players = await players_cache.get(pal.players)
         points = []
         anomalies = []
         for p in players:
@@ -663,13 +687,14 @@ def create_app(
             )
 
         options = ini_store.read_options()
-        updates, errors = build_updates(body.values, options)
-        added, add_errors = add_fields(body.additions, options)
-        custom, custom_errors = add_custom_fields(
+        updates, errors, warnings = build_updates(body.values, options)
+        added, add_errors, add_warnings = add_fields(body.additions, options)
+        custom, custom_errors, custom_warnings = add_custom_fields(
             [c.model_dump() for c in body.custom_additions], options
         )
         added.update(custom)
         errors += add_errors + custom_errors
+        warnings += add_warnings + custom_warnings
         if errors:
             raise HTTPException(400, " / ".join(errors))
 
@@ -677,7 +702,8 @@ def create_app(
         changed = {k: v for k, v in updates.items() if options.get(k) != v}
         changed.update(added)
         if not changed:
-            return {"result": "unchanged", "changed": {}, "added": [], "start_required": False}
+            return {"result": "unchanged", "changed": {}, "added": [],
+                    "warnings": warnings, "start_required": False}
 
         detail = "変更: " + ", ".join(f"{k}={v}" for k, v in changed.items())
         if added:
@@ -707,6 +733,7 @@ def create_app(
                 "added": sorted(added),
                 "when": body.when,
                 "schedule_id": schedule_id,
+                "warnings": warnings,
                 "pending_total": len(pending),
             }
 
@@ -726,6 +753,7 @@ def create_app(
             "backup": backup.name,
             "changed": changed,
             "added": sorted(added),
+            "warnings": warnings,
             # 停止中に書いた前提なので、あとは起動すれば反映される
             "start_required": True,
         }

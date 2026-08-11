@@ -133,9 +133,13 @@ class RestartManager:
         announce_template: str = DEFAULT_RESTART_TEMPLATE,
         debounce_sec: float = 60.0,
         shutdown_waittime: int = 10,
+        shutdown_grace: float = 120.0,
+        poll_interval: float = 1.0,
         use_systemd: bool = True,
         apply_pending: ApplyPending | None = None,
         count_pending: CountPending | None = None,
+        suppress_alerts: Callable[[float], None] | None = None,
+        alert_grace: float = 180.0,
     ) -> None:
         self._pal = pal
         self._announcer = announcer
@@ -144,10 +148,16 @@ class RestartManager:
         # 件数は「再起動を stop→書き込み→start に分ける必要があるか」の判定に使う
         self._apply_pending = apply_pending
         self._count_pending = count_pending
+        # 意図的に落としている間の「応答なし」通知を止めるためのフック
+        self._suppress_alerts = suppress_alerts
+        self.alert_grace = alert_grace
         self.notice_offsets = tuple(sorted((float(o) for o in notice_offsets), reverse=True))
         self.announce_template = announce_template
         self.debounce_sec = debounce_sec
         self.shutdown_waittime = shutdown_waittime
+        # shutdown API の waittime を過ぎてから、実際に落ちるのを待つ猶予
+        self.shutdown_grace = shutdown_grace
+        self.poll_interval = poll_interval
         self.use_systemd = use_systemd
 
         self.status = RestartStatus()
@@ -273,18 +283,27 @@ class RestartManager:
                     await self._pal.save()
                     self._step("world_save")
                 except PalApiError as exc:
+                    # タイムアウトは「保存が失敗した」ことの証明ではない。
+                    # 保存できたか確認できない以上どちらでも中止するが、
+                    # 原因の切り分けができるよう文面は区別する
+                    cause = (
+                        "ワールド保存の応答を確認できなかった"
+                        if exc.timed_out else "ワールド保存に失敗した"
+                    )
                     self._step("world_save", ok=False, detail=str(exc))
                     self.status.phase = "failed"
-                    self.status.message = f"ワールド保存に失敗したため{label}を中止しました: {exc}"
+                    self.status.message = f"{cause}ため{label}を中止しました: {exc}"
                     self.status.finished_at = time.time()
                     await self._announcer.send(
-                        f"ワールド保存に失敗したため{label}を中止しました。",
-                        source=mode,
-                        reason=reason,
+                        f"{cause}ため{label}を中止しました。", source=mode, reason=reason,
                     )
                     await self._announcer.discord_only(
                         f"サーバー{label}を中止しました",
-                        f"理由: ワールド保存に失敗\n{exc}",
+                        f"理由: {cause}\n{exc}"
+                        + (
+                            "\n\nPAL_SLOW_TIMEOUT を延ばすか、ワールドの肥大化を確認してください。"
+                            if exc.timed_out else ""
+                        ),
                         source=mode,
                         level="crit",
                         reason=reason,
@@ -362,8 +381,50 @@ class RestartManager:
         if prev is not None and prev > 0:
             await asyncio.sleep(prev)
 
+    async def _wait_until_down(self) -> None:
+        """shutdown API を投げたあと、実際に落ちるまで待つ。
+
+        以前は `min(shutdown_waittime, 5)` 秒だけ寝ていたが、
+        実機のワールド保存はもっと時間がかかる。待ちが足りないまま
+        systemctl stop に進むと、保存中に SIGTERM を送ることになる。
+
+        逆に固定で長く寝ると、すぐ落ちた場合に無駄な停止時間が延びる。
+        REST API に到達できなくなった時点を「落ちた」とみなして先へ進む。
+        REST API が無効な構成では判定できないので、その場合は
+        shutdown_waittime を待ってから進む。
+        """
+        deadline = self.shutdown_waittime + self.shutdown_grace
+        if deadline <= 0:
+            return
+
+        loop = asyncio.get_running_loop()
+        end = loop.time() + deadline
+        while loop.time() < end:
+            try:
+                await self._pal.info()
+            except PalApiError:
+                elapsed = deadline - (end - loop.time())
+                self._step("wait_until_down", detail=f"{elapsed:.1f}秒で応答が止まりました")
+                return
+            await asyncio.sleep(min(self.poll_interval, max(0.0, end - loop.time())))
+
+        self._step(
+            "wait_until_down", ok=False,
+            detail=f"{deadline:.0f}秒待っても応答が止まりませんでした。停止処理に進みます",
+        )
+
+    def _suppress_downtime(self, seconds: float) -> None:
+        if self._suppress_alerts is not None:
+            self._suppress_alerts(seconds)
+
     async def _shutdown(self, mode: Mode, schedule_id: str | None = None) -> None:
         label = MODE_LABELS.get(mode, mode)
+
+        # ここから先はこちらの意思で落とすので、「応答なし」の通知を止める。
+        # 停止待ち + 設定反映 + 起動 + 起動しきるまで、をまとめて覆う長さにする
+        self._suppress_downtime(
+            self.shutdown_waittime + self.shutdown_grace + self.alert_grace
+        )
         try:
             await self._pal.shutdown(
                 waittime=self.shutdown_waittime, message=f"サーバーを{label}します"
@@ -377,7 +438,7 @@ class RestartManager:
             self._step("systemd_skipped", detail="systemd 未使用（自動再起動に任せる）")
             return
 
-        await asyncio.sleep(min(self.shutdown_waittime, 5))
+        await self._wait_until_down()
 
         if mode == "stop":
             result = await self._service.stop()
@@ -395,6 +456,7 @@ class RestartManager:
         if not self._has_pending(schedule_id):
             result = await self._service.restart()
             self._step("systemctl_restart", ok=result.ok, detail=result.stdout or result.stderr)
+            self._suppress_downtime(self.alert_grace)
             if not result.ok:
                 raise RuntimeError(f"再起動に失敗: {result.stderr}")
             return
@@ -410,6 +472,9 @@ class RestartManager:
         # 設定が変わらないより、サーバが落ちたままの方が困る。
         result = await self._service.start()
         self._step("systemctl_start", ok=result.ok, detail=result.stdout or result.stderr)
+        # 起動コマンドは即座に返るが、実機が接続を受け付けるまでは数十秒かかる。
+        # ここから改めて猶予を取り直す
+        self._suppress_downtime(self.alert_grace)
         if not result.ok:
             raise RuntimeError(f"起動に失敗: {result.stderr}")
 
