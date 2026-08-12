@@ -172,6 +172,26 @@ textarea { width: 100%; min-height: 320px; font-family: ui-monospace, "SF Mono",
 
 canvas { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
 
+/* --- ログイン画面 --- */
+.login-screen {
+  display: none; position: fixed; inset: 0; z-index: 300;
+  background: var(--bg); align-items: center; justify-content: center; padding: 20px;
+}
+.login-screen.show { display: flex; }
+.login-card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 32px 30px; width: 100%; max-width: 380px;
+  box-shadow: 0 24px 60px rgba(0,0,0,.45);
+}
+.login-brand { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+.login-lead { color: var(--muted); font-size: 13px; margin: 0 0 22px; }
+.login-label {
+  display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px;
+}
+#login-username, #login-password { width: 100%; }
+.login-error { color: #ff9d9d; font-size: 12.5px; min-height: 1.4em; margin: 8px 0 4px; }
+.login-submit { width: 100%; margin-top: 6px; }
+
 .backdrop { display: none; }
 @media (max-width: 700px) {
   .layout { display: block; }
@@ -203,6 +223,20 @@ canvas { width: 100%; background: var(--panel); border: 1px solid var(--line); b
 </div>
 <div id="toast"></div>
 <div id="modal-root"></div>
+
+<div class="login-screen" id="login-screen">
+  <div class="login-card">
+    <div class="login-brand">Palworld Manager</div>
+    <p class="login-lead">サーバを操作するにはログインが必要です。閲覧だけならログインは要りません。</p>
+    <label class="login-label" for="login-username">ログインID</label>
+    <input type="text" id="login-username" autocomplete="username" autofocus>
+    <label class="login-label" for="login-password" style="margin-top:14px">パスワード</label>
+    <input type="password" id="login-password" autocomplete="current-password">
+    <div class="login-error" id="login-error"></div>
+    <button class="btn primary login-submit" id="login-submit">ログイン</button>
+    <button class="btn login-submit" id="login-cancel">ログインせずに閲覧する</button>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -248,6 +282,18 @@ async function api(path, options) {
       detail = typeof body.detail === "string" ? body.detail
         // FastAPI のバリデーションエラーは配列で来る
         : body.detail.map(d => (d.loc ? d.loc[d.loc.length - 1] + ": " : "") + d.msg).join(" / ");
+    }
+    // 401 は「操作にはログインが要る」の意味。閲覧は 401 にならない。
+    // ログイン済みのつもりで操作していたならセッション切れなので、ログインに戻す。
+    // もともと閲覧専用で見ていた相手を、ログイン画面で足止めはしない
+    if (resp.status === 401 && !path.startsWith("/api/login")) {
+      const err = new Error(detail);
+      err.unauthorized = true;
+      if (state.config && state.config.authenticated) {
+        state.config.authenticated = false;
+        showLogin("セッションが切れました。もう一度ログインしてください。");
+      }
+      throw err;
     }
     throw new Error(detail);
   }
@@ -481,6 +527,93 @@ function openStartModal(onDone) {
 }
 
 // --------------------------------------------------------------------------
+// ログインと閲覧専用モード
+// --------------------------------------------------------------------------
+/** サーバを操作できるか。
+ *
+ *  未ログインでも画面は見られる（Issue #15）。操作系の UI はここで塞ぐ。
+ *  塞ぐのは操作ミスを減らすためで、実際の可否はサーバ側が 401 で決めている。
+ */
+function canOperate() {
+  if (!state.config) return false;
+  return !state.config.auth_required || state.config.authenticated;
+}
+
+/** 操作系のボタンや入力を、閲覧専用のときだけ押せなくする。 */
+function gate(node) {
+  if (!node || canOperate()) return node;
+  node.disabled = true;
+  node.title = "閲覧のみです。操作するにはログインしてください";
+  return node;
+}
+
+/** 操作できない理由を画面上でも伝える。操作できるときは何も出さない。 */
+function readOnlyNote(text) {
+  if (canOperate()) return null;
+  return el("div", { class: "infobox row", style: "margin-bottom:10px" }, [
+    el("span", { text: text || "閲覧のみです。操作するにはログインしてください。" }),
+    el("button", { class: "btn small", text: "ログイン", onclick: () => showLogin("") }),
+  ]);
+}
+
+function showLogin(message) {
+  // 進行中の更新を止める。ログイン画面の裏で回し続ける意味がない
+  if (state.refresher) { clearInterval(state.refresher); state.refresher = null; }
+  if (state.ws) { state.ws.close(); state.ws = null; }
+
+  $("login-screen").classList.add("show");
+
+  const err = $("login-error");
+  err.textContent = message || "";
+  $("login-password").value = "";
+  // ID は消さない。入れ直させる意味がなく、打ち直しが手間なだけ
+  const id = $("login-username");
+  (id.value ? $("login-password") : id).focus();
+}
+
+function hideLogin() {
+  $("login-screen").classList.remove("show");
+}
+
+/** ログインせずに見る。閲覧専用のまま画面を組み立て直す。 */
+async function browseAsGuest() {
+  hideLogin();
+  $("login-error").textContent = "";
+  await start();
+}
+
+async function submitLogin() {
+  const id = $("login-username");
+  const pw = $("login-password");
+  const err = $("login-error");
+  const btn = $("login-submit");
+  if (!id.value) { err.textContent = "ログインIDを入力してください"; id.focus(); return; }
+  if (!pw.value) { err.textContent = "パスワードを入力してください"; pw.focus(); return; }
+
+  btn.disabled = true;
+  try {
+    await post("/api/login", { username: id.value, password: pw.value });
+    pw.value = "";
+    err.textContent = "";
+    hideLogin();
+    await start();
+  } catch (e) {
+    err.textContent = e.message;
+    pw.select();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function logout() {
+  try { await post("/api/logout"); } catch (e) { /* 失敗しても閲覧専用へ戻す */ }
+  state.status = null;
+  // ログアウト後も閲覧はできる。ログイン画面で止めない
+  await start();
+  toast("ログアウトしました。閲覧のみになります", "ok");
+}
+
+// --------------------------------------------------------------------------
 // 画面定義
 // --------------------------------------------------------------------------
 const VIEWS = [
@@ -530,6 +663,26 @@ function buildSidebar() {
     }));
   }
   bar.appendChild(el("div", { class: "spacer" }));
+  if (state.config && state.config.auth_required) {
+    if (canOperate()) {
+      bar.appendChild(el("button", {
+        class: "navbtn", text: "ログアウト", style: "color:var(--crit)",
+        onclick: () => openModal({
+          title: "ログアウトします",
+          lead: "閲覧は続けられますが、再び操作するにはログインが必要になります。",
+          confirmLabel: "ログアウト",
+          onConfirm: logout,
+        }),
+      }));
+    } else {
+      bar.appendChild(el("div", { class: "muted", style: "padding:8px 12px;font-size:12px",
+        text: "閲覧のみ" }));
+      bar.appendChild(el("button", {
+        class: "navbtn", text: "ログイン", style: "color:var(--ok)",
+        onclick: () => showLogin(""),
+      }));
+    }
+  }
   const online = state.status ? state.status.online : null;
   bar.appendChild(el("div", { class: "muted", style: "padding:8px 12px;font-size:12px" }, [
     el("span", { class: "statusdot " + (online === null ? "" : online ? "online" : "offline") }),
@@ -617,12 +770,13 @@ function renderDashboard(root) {
 
   root.appendChild(el("h2", { text: "アナウンス" }));
   root.appendChild(el("div", { class: "panel" }, [
+    readOnlyNote("アナウンスの送信にはログインが必要です。履歴の閲覧はできます。"),
     el("div", { class: "row" }, [
-      announceInput,
-      el("button", { class: "btn primary", text: "送信", onclick: sendAnnounce }),
+      gate(announceInput),
+      gate(el("button", { class: "btn primary", text: "送信", onclick: sendAnnounce })),
     ]),
     el("label", { class: "row muted small", style: "margin-top:8px" },
-      [toDiscord, "Discord にも同じ内容を流す"]),
+      [gate(toDiscord), "Discord にも同じ内容を流す"]),
   ]));
 
   // サーバ操作のボタンは「サーバ設定」タブに集約している。
@@ -662,7 +816,7 @@ function renderDashboard(root) {
         el("strong", { text: r.mode_label + "シーケンス進行中" }),
         el("span", { class: "muted", text: "(" + r.phase + ") " + r.message }),
         remain !== null && remain !== undefined ? el("span", { text: "残り " + fmtDuration(remain) }) : null,
-        r.cancellable ? el("button", {
+        r.cancellable ? gate(el("button", {
           class: "btn danger", text: "キャンセル",
           onclick: () => openModal({
             title: r.mode_label + "をキャンセルします",
@@ -674,7 +828,7 @@ function renderDashboard(root) {
               loadHistory();
             },
           }),
-        }) : null,
+        })) : null,
       ]));
       showBanner(r.mode_label + "シーケンスが進行中です: " + r.message, "warn");
     } else {
@@ -717,6 +871,8 @@ function renderPlayers(root) {
   root.appendChild(el("h1", { text: "プレイヤー" }));
   const info = el("div", { class: "muted", style: "margin-bottom:10px" });
   const wrap = el("div", { class: "tablewrap" });
+  const note = readOnlyNote("プレイヤーのキック・BAN にはログインが必要です。一覧の閲覧はできます。");
+  if (note) root.appendChild(note);
   root.appendChild(info);
   root.appendChild(wrap);
 
@@ -769,8 +925,8 @@ function renderPlayers(root) {
         el("td", { class: "muted", text: Math.round(p.location_x) + ", " + Math.round(p.location_y) }),
         el("td", { class: "muted small", text: p.userId }),
         el("td", null, el("div", { class: "row" }, [
-          el("button", { class: "btn", text: "キック", onclick: () => act("kick", p) }),
-          el("button", { class: "btn danger", text: "BAN", onclick: () => act("ban", p) }),
+          gate(el("button", { class: "btn", text: "キック", onclick: () => act("kick", p) })),
+          gate(el("button", { class: "btn danger", text: "BAN", onclick: () => act("ban", p) })),
         ])),
       ]));
     }
@@ -936,21 +1092,22 @@ function renderSettings(root) {
   const sequenceBox = el("div", { style: "margin-top:12px" });
   root.appendChild(el("h2", { text: "サーバ操作" }));
   root.appendChild(el("div", { class: "panel" }, [
+    readOnlyNote("サーバ設定の操作にはログインが必要です。状態の閲覧はできます。"),
     serviceInfo,
     el("div", { class: "row" }, [
-      el("button", {
+      gate(el("button", {
         class: "btn primary", text: "サーバーを起動",
         onclick: () => openStartModal(refreshSequence),
-      }),
-      el("button", {
+      })),
+      gate(el("button", {
         class: "btn danger", text: "サーバーを再起動",
         onclick: () => openSequenceModal("restart", refreshSequence),
-      }),
-      el("button", {
+      })),
+      gate(el("button", {
         class: "btn danger", text: "サーバーを停止",
         onclick: () => openSequenceModal("stop", refreshSequence),
-      }),
-      el("button", {
+      })),
+      gate(el("button", {
         class: "btn", text: "ワールド保存",
         onclick: () => openModal({
           title: "ワールドを保存します",
@@ -958,7 +1115,7 @@ function renderSettings(root) {
           confirmLabel: "保存する",
           async onConfirm() { await post("/api/save"); toast("ワールドを保存しました", "ok"); },
         }),
-      }),
+      })),
     ]),
     el("div", { class: "muted small", style: "margin-top:10px" },
       "再起動と停止は、予告アナウンス → ワールド保存 → 停止 の順に実行します。保存に失敗した場合は中止します。"),
@@ -977,7 +1134,7 @@ function renderSettings(root) {
       el("span", { text: "(" + r.phase + ") " + r.message }),
       r.seconds_remaining !== null && r.seconds_remaining !== undefined
         ? el("span", { text: "残り " + fmtDuration(r.seconds_remaining) }) : null,
-      r.cancellable ? el("button", {
+      r.cancellable ? gate(el("button", {
         class: "btn danger", text: "キャンセル",
         onclick: () => openModal({
           title: r.mode_label + "をキャンセルします",
@@ -989,7 +1146,7 @@ function renderSettings(root) {
             refreshSequence();
           },
         }),
-      }) : null,
+      })) : null,
     ]));
   }
 
@@ -1005,7 +1162,7 @@ function renderSettings(root) {
   root.appendChild(pathInfo);
   root.appendChild(area);
   root.appendChild(el("div", { class: "row", style: "margin-top:10px" }, [
-    el("button", {
+    gate(el("button", {
       class: "btn primary", text: "保存",
       onclick: () => openModal({
         title: "設定ファイルを上書きします",
@@ -1026,7 +1183,7 @@ function renderSettings(root) {
           load();
         },
       }),
-    }),
+    })),
     el("button", { class: "btn", text: "読み直す", onclick: () => load() }),
   ]));
   root.appendChild(el("h2", { text: "バックアップ" }));
@@ -1042,7 +1199,9 @@ function renderSettings(root) {
 
     pathInfo.textContent = data.exists ? data.path : "設定ファイルが見つかりません: " + data.path;
     area.value = data.text || "";
-    area.disabled = !data.exists;
+    // 閲覧専用のときはパスワードが伏字で入っている。編集させると、
+    // 伏字をそのまま保存して本物のパスワードを潰しかねない
+    area.disabled = !data.exists || !canOperate();
 
     clear(backups);
     if (!data.backups.length) {
@@ -1059,7 +1218,7 @@ function renderSettings(root) {
         el("td", { text: b.name }),
         el("td", { text: fmtTime(b.created_at) }),
         el("td", { text: b.size + " B" }),
-        el("td", null, el("button", {
+        el("td", null, gate(el("button", {
           class: "btn", text: "この内容に戻す",
           onclick: () => openModal({
             title: "バックアップから復元します",
@@ -1072,7 +1231,7 @@ function renderSettings(root) {
               load();
             },
           }),
-        })),
+        }))),
       ]));
     }
     table.appendChild(tbody);
@@ -1092,6 +1251,9 @@ function renderGameSettings(root) {
   root.appendChild(el("h1", { text: "ゲーム設定" }));
   const pathInfo = el("div", { class: "muted small", style: "margin-bottom:12px" });
   const runningWarn = el("div", { style: "margin-bottom:12px" });
+  const note = readOnlyNote(
+    "閲覧のみです。値の変更にはログインが必要で、パスワード系は値も伏せています。");
+  if (note) root.appendChild(note);
   root.appendChild(pathInfo);
   root.appendChild(runningWarn);
 
@@ -1248,8 +1410,10 @@ function renderGameSettings(root) {
     const current = currentValue(f);
 
     // 変更すると管理ツールがサーバと通信できなくなる項目は編集させない。
-    // 予約反映と組み合わさると、無人のまま締め出されることになる
-    if (f.locked) {
+    // 予約反映と組み合わさると、無人のまま締め出されることになる。
+    // 未ログインの閲覧者も同じ扱いにする（Issue #15）。
+    // パスワードはサーバ側で伏字にして返ってくるので、ここでも伏せたまま出す
+    if (f.locked || !canOperate()) {
       const shown = el("input", {
         type: "text", value: f.secret ? "********" : String(current), readonly: "readonly",
       });
@@ -1413,7 +1577,7 @@ function renderGameSettings(root) {
           el("div", { class: "title", text: f.label }),
           el("div", { class: "name", text: f.name }),
         ]),
-        el("button", { class: "btn small", text: "追加", onclick: () => addField(f) }),
+        gate(el("button", { class: "btn small", text: "追加", onclick: () => addField(f) })),
       ]),
       el("div", { class: "help", text: f.default_known
         ? "未設定（ゲーム側の既定値 " + displayValue(f, f.default) + " で動作中）"
@@ -1482,6 +1646,8 @@ function renderGameSettings(root) {
 
   function paintSavebar() {
     clear(savebar);
+    // 閲覧専用では編集できないので、差分バー自体を出さない
+    if (!canOperate()) return;
     const newCount = additions.size + customs.size;
     const n = edits.size + newCount;
     const label = n
@@ -1534,11 +1700,13 @@ function renderGameSettings(root) {
       }
     }
     // 一覧のどこにも無いプロパティを、自分で足すための入口
-    availableBox.appendChild(el("div", { class: "row", style: "margin-top:16px" }, [
-      el("button", { class: "btn", text: "＋ 一覧に無い項目を自分で追加", onclick: openCustomModal }),
-      el("span", { class: "muted small",
-        text: "Palworld のアップデートで増えた項目を、このツールの更新を待たずに設定できます" }),
-    ]));
+    if (canOperate()) {
+      availableBox.appendChild(el("div", { class: "row", style: "margin-top:16px" }, [
+        el("button", { class: "btn", text: "＋ 一覧に無い項目を自分で追加", onclick: openCustomModal }),
+        el("span", { class: "muted small",
+          text: "Palworld のアップデートで増えた項目を、このツールの更新を待たずに設定できます" }),
+      ]));
+    }
     paintSavebar();
   }
 
@@ -1697,7 +1865,7 @@ function renderGameSettings(root) {
             style: "color:var(--warn)", text: "紐づけ先の予約が削除されています（次の停止時に反映）" }) : null,
         ]),
         el("td", { class: "muted small", text: p.note || "-" }),
-        el("td", null, el("button", {
+        el("td", null, gate(el("button", {
           class: "btn small danger", text: "取り消す",
           onclick: () => openModal({
             title: "予約した設定変更を取り消します",
@@ -1710,7 +1878,7 @@ function renderGameSettings(root) {
               await load();
             },
           }),
-        })),
+        }))),
       ]));
     }
     table.appendChild(tbody);
@@ -1722,7 +1890,7 @@ function renderGameSettings(root) {
     pendingBox.appendChild(wrap);
     if (!serverRunning) {
       pendingBox.appendChild(el("div", { class: "row", style: "margin-top:8px" }, [
-        el("button", {
+        gate(el("button", {
           class: "btn", text: "今すぐ反映する",
           onclick: () => openModal({
             title: "反映待ちの変更を今すぐ反映します",
@@ -1734,7 +1902,7 @@ function renderGameSettings(root) {
               await load();
             },
           }),
-        }),
+        })),
         el("span", { class: "muted small", text: "サーバ停止中なので、待たずに反映できます" }),
       ]));
     }
@@ -1976,8 +2144,11 @@ function renderSchedules(root) {
           + "（サーバは停止時に設定ファイルを上書きするため、停止前の編集は失われます）。" }),
   ]));
 
+  const note = readOnlyNote("閲覧のみです。予約の追加・変更・削除にはログインが必要です。");
+  if (note) root.appendChild(note);
+
   root.appendChild(el("div", { class: "row", style: "margin-bottom:16px" }, [
-    el("button", { class: "btn primary", text: "＋ 予約を追加", onclick: () => openScheduleModal(null, load) }),
+    gate(el("button", { class: "btn primary", text: "＋ 予約を追加", onclick: () => openScheduleModal(null, load) })),
   ]));
 
   const list = el("div");
@@ -2094,15 +2265,15 @@ function renderSchedules(root) {
         el("td", { text: fmtTime(s.next_action_at) }),
         el("td", { text: s.enabled ? "有効" : "無効", class: s.enabled ? "" : "muted" }),
         el("td", null, el("div", { class: "row" }, [
-          el("button", { class: "btn", text: "編集", onclick: () => openScheduleModal(s, load) }),
-          el("button", {
+          gate(el("button", { class: "btn", text: "編集", onclick: () => openScheduleModal(s, load) })),
+          gate(el("button", {
             class: "btn", text: s.enabled ? "無効化" : "有効化",
             onclick: async () => {
               try { await patch("/api/schedules/" + s.id, { enabled: !s.enabled }); load(); }
               catch (e) { toast(e.message, "err"); }
             }
-          }),
-          el("button", {
+          })),
+          gate(el("button", {
             class: "btn danger", text: "削除",
             onclick: () => openModal({
               title: "予約を削除します",
@@ -2111,7 +2282,7 @@ function renderSchedules(root) {
               confirmLabel: "削除する",
               async onConfirm() { await del("/api/schedules/" + s.id); toast("削除しました", "ok"); load(); },
             }),
-          }),
+          })),
         ])),
       ]));
     }
@@ -2166,10 +2337,43 @@ $("backdrop").addEventListener("click", closeDrawer);
 // --------------------------------------------------------------------------
 // 起動
 // --------------------------------------------------------------------------
+async function start() {
+  try {
+    state.config = await api("/api/config");
+  } catch (e) {
+    // 設定が取れないと操作の可否も判断できず、見た目は未ログインと同じになる。
+    // 黙って閲覧専用にすると原因が分からないので、はっきり出す。
+    // バナーは各画面が自分の状態で上書きするため、トーストでも出しておく
+    state.config = null;
+    toast("設定の取得に失敗しました: " + e.message, "err");
+    showBanner("管理ツールの設定を取得できませんでした: " + e.message, "crit");
+    setView(state.view || "dashboard");
+    return;
+  }
+
+  // 画面だけ新しく、API が古いまま動いている状態（静的ファイルは毎回
+  // ディスクから読まれるので、管理ツールを再起動し忘れると起きる）。
+  // ログインしても操作可否を判定できず「ログインが反映されない」ように見えるので、
+  // 症状ではなく原因を出す
+  if (state.config.authenticated === undefined) {
+    toast("管理ツールの再起動が必要です（画面と API のバージョンが揃っていません）", "err");
+  }
+  setView(state.view || "dashboard");
+}
+
 (async function main() {
-  try { state.config = await api("/api/config"); }
-  catch (e) { toast("設定の取得に失敗しました: " + e.message, "err"); }
-  setView("dashboard");
+  $("login-submit").addEventListener("click", submitLogin);
+  $("login-cancel").addEventListener("click", browseAsGuest);
+  for (const id of ["login-username", "login-password"]) {
+    $(id).addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") submitLogin();
+    });
+  }
+
+  // 未ログインでも閲覧はできるので、まず画面を出す。
+  // ログイン画面は、操作したくなったときにサイドバーから開く
+  hideLogin();
+  await start();
 })();
 </script>
 </body>
