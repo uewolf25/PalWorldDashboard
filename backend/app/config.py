@@ -300,6 +300,8 @@ class Settings:
             "auth_required": bool(self.app_password),
             # 画面が「閲覧専用で出すか、操作もさせるか」を決めるために使う
             "authenticated": authenticated,
+            # サイドバーに出すログイン名。ログイン前には教えない
+            "app_user": self.app_user if authenticated else "",
             "log_source": self.log_source,
             "dry_run": self.dry_run,
         }
