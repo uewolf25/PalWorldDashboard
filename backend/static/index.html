@@ -2338,9 +2338,25 @@ $("backdrop").addEventListener("click", closeDrawer);
 // 起動
 // --------------------------------------------------------------------------
 async function start() {
-  try { state.config = await api("/api/config"); }
-  catch (e) {
+  try {
+    state.config = await api("/api/config");
+  } catch (e) {
+    // 設定が取れないと操作の可否も判断できず、見た目は未ログインと同じになる。
+    // 黙って閲覧専用にすると原因が分からないので、はっきり出す。
+    // バナーは各画面が自分の状態で上書きするため、トーストでも出しておく
+    state.config = null;
     toast("設定の取得に失敗しました: " + e.message, "err");
+    showBanner("管理ツールの設定を取得できませんでした: " + e.message, "crit");
+    setView(state.view || "dashboard");
+    return;
+  }
+
+  // 画面だけ新しく、API が古いまま動いている状態（静的ファイルは毎回
+  // ディスクから読まれるので、管理ツールを再起動し忘れると起きる）。
+  // ログインしても操作可否を判定できず「ログインが反映されない」ように見えるので、
+  // 症状ではなく原因を出す
+  if (state.config.authenticated === undefined) {
+    toast("管理ツールの再起動が必要です（画面と API のバージョンが揃っていません）", "err");
   }
   setView(state.view || "dashboard");
 }
