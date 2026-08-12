@@ -25,11 +25,14 @@ from app.auth import (
 )
 from app.main import create_app
 
+USERNAME = "palmaster"
 PASSWORD = "s3cret-pass"
+LOGIN = {"username": USERNAME, "password": PASSWORD}
 
 
 @pytest.fixture
 def secured(settings, tmp_path):
+    settings.app_user = USERNAME
     settings.app_password = PASSWORD
     settings.session_secret_file = tmp_path / "session-secret"
     return settings
@@ -128,7 +131,7 @@ async def test_endpoints_need_login(guest):
 
 
 async def test_login_then_access(guest):
-    resp = await guest.post("/api/login", json={"password": PASSWORD})
+    resp = await guest.post("/api/login", json=LOGIN)
     assert resp.status_code == 200
     assert COOKIE_NAME in resp.cookies
 
@@ -138,14 +141,14 @@ async def test_login_then_access(guest):
 
 
 async def test_wrong_password_is_rejected(guest):
-    resp = await guest.post("/api/login", json={"password": "nope"})
+    resp = await guest.post("/api/login", json={"username": USERNAME, "password": "nope"})
     assert resp.status_code == 401
     assert COOKIE_NAME not in resp.cookies
     assert (await guest.get("/api/config")).status_code == 401
 
 
 async def test_login_cookie_is_httponly_and_samesite(guest):
-    resp = await guest.post("/api/login", json={"password": PASSWORD})
+    resp = await guest.post("/api/login", json=LOGIN)
     header = resp.headers["set-cookie"].lower()
     # JavaScript から読めないようにする
     assert "httponly" in header
@@ -155,7 +158,7 @@ async def test_login_cookie_is_httponly_and_samesite(guest):
 
 
 async def test_logout_clears_the_session(guest):
-    await guest.post("/api/login", json={"password": PASSWORD})
+    await guest.post("/api/login", json=LOGIN)
     assert (await guest.get("/api/config")).status_code == 200
 
     assert (await guest.post("/api/logout")).status_code == 200
@@ -167,7 +170,7 @@ async def test_auth_status_is_reachable_without_logging_in(guest):
     body = (await guest.get("/api/auth/status")).json()
     assert body == {"required": True, "authenticated": False}
 
-    await guest.post("/api/login", json={"password": PASSWORD})
+    await guest.post("/api/login", json=LOGIN)
     assert (await guest.get("/api/auth/status")).json()["authenticated"] is True
 
 
@@ -181,7 +184,7 @@ async def test_expired_cookie_is_rejected(guest, secured):
     app = create_app(secured, pal_client=guest.app.state.pal,
                      notifier=guest.app.state.notifier, start_background=False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://manager") as c:
-        await c.post("/api/login", json={"password": PASSWORD})
+        await c.post("/api/login", json=LOGIN)
         assert (await c.get("/api/config")).status_code == 401
 
 
@@ -199,7 +202,7 @@ async def test_basic_auth_still_works_for_api_clients(secured, pal_client, notif
     """curl やスクリプトからは Basic 認証の方が扱いやすい。"""
     app = create_app(secured, pal_client=pal_client, notifier=notifier, start_background=False)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://manager", auth=("admin", PASSWORD)
+        transport=ASGITransport(app=app), base_url="http://manager", auth=(USERNAME, PASSWORD)
     ) as c:
         assert (await c.get("/api/config")).status_code == 200
 
@@ -207,7 +210,7 @@ async def test_basic_auth_still_works_for_api_clients(secured, pal_client, notif
 async def test_basic_auth_with_a_wrong_password_fails(secured, pal_client, notifier):
     app = create_app(secured, pal_client=pal_client, notifier=notifier, start_background=False)
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://manager", auth=("admin", "nope")
+        transport=ASGITransport(app=app), base_url="http://manager", auth=(USERNAME, "nope")
     ) as c:
         assert (await c.get("/api/config")).status_code == 401
 
@@ -228,7 +231,7 @@ async def test_no_password_means_no_login(client):
 
 
 async def test_login_is_a_noop_without_a_password(client):
-    resp = await client.post("/api/login", json={"password": "whatever"})
+    resp = await client.post("/api/login", json={"username": "admin", "password": "whatever"})
     assert resp.status_code == 200
     assert resp.json()["required"] is False
 
@@ -270,11 +273,11 @@ async def test_repeated_bad_logins_get_locked_out(secured, pal_client, notifier)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://manager") as c:
         for _ in range(2):
-            assert (await c.post("/api/login", json={"password": "nope"})).status_code == 401
-        assert (await c.post("/api/login", json={"password": "nope"})).status_code == 429
+            assert (await c.post("/api/login", json={"username": USERNAME, "password": "nope"})).status_code == 401
+        assert (await c.post("/api/login", json={"username": USERNAME, "password": "nope"})).status_code == 429
 
         # ロック中は正しいパスワードでも受け付けない
-        resp = await c.post("/api/login", json={"password": PASSWORD})
+        resp = await c.post("/api/login", json=LOGIN)
         assert resp.status_code == 429
         assert "秒後" in resp.json()["detail"]
 
@@ -284,16 +287,16 @@ async def test_successful_login_resets_the_counter(secured, pal_client, notifier
     app = create_app(secured, pal_client=pal_client, notifier=notifier, start_background=False)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://manager") as c:
-        await c.post("/api/login", json={"password": "nope"})
-        await c.post("/api/login", json={"password": "nope"})
-        assert (await c.post("/api/login", json={"password": PASSWORD})).status_code == 200
+        await c.post("/api/login", json={"username": USERNAME, "password": "nope"})
+        await c.post("/api/login", json={"username": USERNAME, "password": "nope"})
+        assert (await c.post("/api/login", json=LOGIN)).status_code == 200
         # 数え直されているので、また2回は失敗できる
-        await c.post("/api/login", json={"password": "nope"})
-        assert (await c.post("/api/login", json={"password": "nope"})).status_code == 401
+        await c.post("/api/login", json={"username": USERNAME, "password": "nope"})
+        assert (await c.post("/api/login", json={"username": USERNAME, "password": "nope"})).status_code == 401
 
 
 async def test_empty_password_is_rejected_by_validation(guest):
-    assert (await guest.post("/api/login", json={"password": ""})).status_code == 422
+    assert (await guest.post("/api/login", json={"username": USERNAME, "password": ""})).status_code == 422
 
 
 # ---- WebSocket（R-14 の解消） ----------------------------------------------
@@ -321,7 +324,7 @@ def test_websocket_accepts_the_session_cookie(secured, pal_client, notifier):
 
     app = create_app(secured, pal_client=pal_client, notifier=notifier, start_background=False)
     with TestClient(app) as client:
-        resp = client.post("/api/login", json={"password": PASSWORD})
+        resp = client.post("/api/login", json=LOGIN)
         assert resp.status_code == 200
 
         # TestClient は Cookie を保持するので、そのまま WS を張れる
@@ -348,7 +351,7 @@ def test_websocket_still_accepts_basic_auth(secured, pal_client, notifier):
     from fastapi.testclient import TestClient
 
     app = create_app(secured, pal_client=pal_client, notifier=notifier, start_background=False)
-    token = base64.b64encode(f"admin:{PASSWORD}".encode()).decode()
+    token = base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
     with TestClient(app) as client:
         with client.websocket_connect(
             "/ws/logs", headers={"Authorization": f"Basic {token}"}
@@ -365,3 +368,61 @@ def test_websocket_is_open_when_no_password_is_set(settings, pal_client, notifie
         with client.websocket_connect("/ws/logs") as ws:
             app.state.broker.publish("認証なし", source="app")
             assert _expect_line(ws, "認証なし")
+
+
+# ---- ログインID ------------------------------------------------------------
+
+
+async def test_wrong_username_is_rejected(guest):
+    resp = await guest.post("/api/login", json={"username": "someone", "password": PASSWORD})
+    assert resp.status_code == 401
+    assert (await guest.get("/api/config")).status_code == 401
+
+
+async def test_error_does_not_reveal_which_field_was_wrong(guest):
+    """ID の総当たりに手掛かりを与えない。"""
+    wrong_user = await guest.post("/api/login", json={"username": "nope", "password": PASSWORD})
+    wrong_pass = await guest.post("/api/login", json={"username": USERNAME, "password": "nope"})
+
+    assert wrong_user.json()["detail"] == wrong_pass.json()["detail"]
+    assert wrong_user.json()["detail"] == "ログインIDまたはパスワードが違います"
+
+
+async def test_username_is_required(guest):
+    assert (await guest.post("/api/login", json={"password": PASSWORD})).status_code == 422
+    assert (await guest.post(
+        "/api/login", json={"username": "", "password": PASSWORD}
+    )).status_code == 422
+
+
+async def test_username_is_case_sensitive(guest):
+    resp = await guest.post("/api/login", json={"username": USERNAME.upper(), "password": PASSWORD})
+    assert resp.status_code == 401
+
+
+async def test_auth_status_does_not_leak_the_username(guest):
+    """ログイン前に ID を教えない。"""
+    body = (await guest.get("/api/auth/status")).json()
+    assert USERNAME not in str(body)
+    assert set(body) == {"required", "authenticated"}
+
+
+async def test_config_does_not_expose_the_password(guest):
+    """ログイン後の設定にもパスワードは出さない。"""
+    await guest.post("/api/login", json=LOGIN)
+    body = (await guest.get("/api/config")).json()
+    assert PASSWORD not in str(body)
+
+
+async def test_wrong_username_also_counts_toward_the_lockout(secured, pal_client, notifier):
+    """ID を変えながらの総当たりも同じ枠で数える。"""
+    secured.app_login_max_attempts = 3
+    app = create_app(secured, pal_client=pal_client, notifier=notifier, start_background=False)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://manager") as c:
+        for name in ("a", "b"):
+            assert (await c.post(
+                "/api/login", json={"username": name, "password": "x"}
+            )).status_code == 401
+        assert (await c.post(
+            "/api/login", json={"username": "c", "password": "x"}
+        )).status_code == 429

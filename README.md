@@ -128,17 +128,36 @@ daily / once は指定時刻ちょうどに動作するよう予告リードぶ�
 
 ### ログイン
 
-`APP_PASSWORD` を設定すると管理画面にログインが必要になる（空なら無認証）。
+`APP_USER` と `APP_PASSWORD` を設定すると、管理画面にログインが必要になる。
+
+**初期パスワードは無い。** `APP_PASSWORD` が空の間は認証そのものが無効で、
+ネットワークが届く誰でもサーバの停止や BAN ができる。本番では必ず設定すること。
+
+```bash
+# 強いパスワードを作る例
+python3 -c "import secrets,string; a=string.ascii_letters+string.digits; \
+  print('-'.join(''.join(secrets.choice(a) for _ in range(5)) for _ in range(4)))"
+```
+
+書く場所は2つだけ（`*.env.example` には書かない）。
+
+| 環境 | ファイル |
+|------|----------|
+| 本番 | `/etc/dashboard-Pal.env`（600 root:root） |
+| 開発 | `.dev/local.env`（gitignore 済み。`dev.sh` が読む） |
 
 | 経路 | 認証方法 |
 |------|----------|
-| ブラウザ | ログイン画面 → セッション Cookie（HttpOnly / SameSite=Lax、HTTPS 時のみ Secure） |
-| curl・スクリプト | Basic 認証（`-u admin:PASS`） |
+| ブラウザ | ログイン画面（ID + パスワード）→ セッション Cookie（HttpOnly / SameSite=Lax、HTTPS 時のみ Secure） |
+| curl・スクリプト | Basic 認証（`-u "$APP_USER:$APP_PASSWORD"`） |
 | WebSocket（ログ画面） | Cookie。Basic 認証も受け付ける |
 
 - セッションは署名付きトークンで、サーバ側には保持しない。
   署名鍵はファイルに永続化するので、**プロセスを再起動してもログインは切れない**
-- ログイン失敗が続いた接続元は一定時間受け付けない（既定 10 回 / 300 秒）
+- ログイン失敗が続いた接続元は一定時間受け付けない（既定 10 回 / 300 秒）。
+  ID を変えながらの総当たりも同じ枠で数える
+- ID とパスワードは**必ず両方を比較**し、どちらが違うかは伝えない。
+  先に ID を判定して打ち切ると、応答の速さから ID が合っていることを読み取れてしまう
 - 401 に `WWW-Authenticate` を返さない。返すとブラウザ標準のダイアログが出て、
   自前のログイン画面と二重になるため
 
@@ -200,7 +219,7 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── notify.py        Discord Webhook
 │   │   └── services.py      ゲームサーバのプロセス制御（systemd / 開発用モック）
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（372件）
+│   ├── tests/               pytest（379件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動

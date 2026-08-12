@@ -160,6 +160,7 @@ class ServiceActionBody(BaseModel):
 
 
 class LoginBody(BaseModel):
+    username: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=1, max_length=200)
 
 
@@ -433,14 +434,19 @@ def create_app(
                 429, f"ログインの試行が多すぎます。{int(wait)} 秒後にもう一度お試しください"
             )
 
-        if not secrets.compare_digest(body.password, cfg.app_password):
+        # 両方を必ず比較する。先に ID を判定して打ち切ると、
+        # 応答の速さから「ID は合っている」ことが読み取れてしまう
+        user_ok = secrets.compare_digest(body.username, cfg.app_user)
+        password_ok = secrets.compare_digest(body.password, cfg.app_password)
+        if not (user_ok and password_ok):
             locked = throttle.record_failure(key)
             logger.warning("ログインに失敗しました (%s)", key)
             if locked:
                 raise HTTPException(
                     429, f"ログインの試行が多すぎます。{int(locked)} 秒後にもう一度お試しください"
                 )
-            raise HTTPException(401, "パスワードが違います")
+            # どちらが違うかは伝えない。ID の総当たりに手掛かりを与えないため
+            raise HTTPException(401, "ログインIDまたはパスワードが違います")
 
         throttle.record_success(key)
         token = issue_token(session_secret, cfg.app_session_ttl)

@@ -188,7 +188,7 @@ canvas { width: 100%; background: var(--panel); border: 1px solid var(--line); b
 .login-label {
   display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px;
 }
-#login-password { width: 100%; }
+#login-username, #login-password { width: 100%; }
 .login-error { color: #ff9d9d; font-size: 12.5px; min-height: 1.4em; margin: 8px 0 4px; }
 .login-submit { width: 100%; margin-top: 6px; }
 
@@ -227,9 +227,11 @@ canvas { width: 100%; background: var(--panel); border: 1px solid var(--line); b
 <div class="login-screen" id="login-screen">
   <div class="login-card">
     <div class="login-brand">Palworld Manager</div>
-    <p class="login-lead">管理画面を開くにはパスワードが必要です。</p>
-    <label class="login-label" for="login-password">パスワード</label>
-    <input type="password" id="login-password" autocomplete="current-password" autofocus>
+    <p class="login-lead">管理画面を開くにはログインが必要です。</p>
+    <label class="login-label" for="login-username">ログインID</label>
+    <input type="text" id="login-username" autocomplete="username" autofocus>
+    <label class="login-label" for="login-password" style="margin-top:14px">パスワード</label>
+    <input type="password" id="login-password" autocomplete="current-password">
     <div class="login-error" id="login-error"></div>
     <button class="btn primary login-submit" id="login-submit">ログイン</button>
   </div>
@@ -532,11 +534,12 @@ function showLogin(message) {
   showBanner("");
   $("login-screen").classList.add("show");
 
-  const pw = $("login-password");
   const err = $("login-error");
   err.textContent = message || "";
-  pw.value = "";
-  pw.focus();
+  $("login-password").value = "";
+  // ID は消さない。入れ直させる意味がなく、打ち直しが手間なだけ
+  const id = $("login-username");
+  (id.value ? $("login-password") : id).focus();
 }
 
 function hideLogin() {
@@ -544,14 +547,16 @@ function hideLogin() {
 }
 
 async function submitLogin() {
+  const id = $("login-username");
   const pw = $("login-password");
   const err = $("login-error");
   const btn = $("login-submit");
-  if (!pw.value) { err.textContent = "パスワードを入力してください"; return; }
+  if (!id.value) { err.textContent = "ログインIDを入力してください"; id.focus(); return; }
+  if (!pw.value) { err.textContent = "パスワードを入力してください"; pw.focus(); return; }
 
   btn.disabled = true;
   try {
-    await post("/api/login", { password: pw.value });
+    await post("/api/login", { username: id.value, password: pw.value });
     pw.value = "";
     err.textContent = "";
     hideLogin();
@@ -2279,9 +2284,11 @@ async function start() {
 
 (async function main() {
   $("login-submit").addEventListener("click", submitLogin);
-  $("login-password").addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") submitLogin();
-  });
+  for (const id of ["login-username", "login-password"]) {
+    $(id).addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") submitLogin();
+    });
+  }
 
   let auth = { required: false, authenticated: true };
   try { auth = await api("/api/auth/status"); }
