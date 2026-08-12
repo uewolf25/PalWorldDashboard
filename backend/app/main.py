@@ -42,6 +42,7 @@ from .restart import (
 from .scheduler import ACTION_LABELS, ACTIONS, ScheduleError, ServerScheduler
 from .services import build_service
 from .settings_ini import SettingsIniError, SettingsIniStore
+from .world import WorldBackupError, WorldStore
 from .settings_schema import (
     CATEGORIES,
     add_custom_fields,
@@ -201,6 +202,9 @@ def create_app(
         use_sudo=cfg.pal_systemctl_sudo,
     )
     ini_store = SettingsIniStore(cfg.pal_settings_ini, cfg.backup_dir, keep=cfg.backup_keep)
+    world_store = WorldStore(
+        cfg.pal_save_dir, cfg.world_backup_dir, keep=cfg.world_backup_keep
+    )
     # ログインのセッション。鍵はファイルに永続化して、再起動でログインが
     # 切れないようにする
     session_secret = load_or_create_secret(cfg.session_secret_file, cfg.app_session_secret)
@@ -665,6 +669,102 @@ def create_app(
     async def save_world() -> dict[str, str]:
         await pal.save()
         return {"result": "ok"}
+
+    # ---- ワールドセーブ --------------------------------------------------
+
+    @app.get("/api/world/backups")
+    async def list_world_backups() -> dict[str, Any]:
+        """セーブの状況とバックアップ一覧。
+
+        サイズの集計はディレクトリ全体を歩くので、数百MBあると数十ms〜かかる。
+        イベントループを止めないようスレッドに逃がす。
+        """
+        stats = await asyncio.to_thread(world_store.stats)
+        backups = await asyncio.to_thread(world_store.list_backups)
+        return {
+            **stats,
+            "backups": [b.as_dict() for b in backups],
+            "keep": cfg.world_backup_keep,
+            # 復元できるかの判定に使う
+            "server_running": await game_server_running(),
+        }
+
+    @app.post("/api/world/backups", dependencies=auth)
+    async def create_world_backup() -> dict[str, Any]:
+        """セーブディレクトリを固める。
+
+        稼働中でも取れるようにしてあるが、その場合は先にワールド保存を挟む。
+        ゲームが書いている最中のファイルを固めると中身が食い違うため。
+        それでも停止中に取る方が確実であることは画面に出している。
+        """
+        saved = False
+        if await game_server_running():
+            try:
+                await pal.save()
+                saved = True
+            except PalApiError as exc:
+                # 保存できなくてもバックアップ自体は取る。
+                # 「取れなかった」より「少し古いかもしれない」方がまし
+                logger.warning("バックアップ前のワールド保存に失敗: %s", exc)
+
+        try:
+            backup = await asyncio.to_thread(world_store.create)
+        except WorldBackupError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        await notify.send(
+            "ワールドをバックアップしました",
+            f"{backup.name}\n{backup.size / 1024 / 1024:.1f} MB",
+            "info",
+        )
+        return {"result": "ok", "backup": backup.as_dict(), "world_saved_first": saved}
+
+    @app.get("/api/world/backups/{name}/download", dependencies=auth)
+    async def download_world_backup(name: str) -> FileResponse:
+        """バックアップをダウンロードする。
+
+        中身はワールドそのもので、伏字にできる類のものでもない。
+        閲覧しかできない相手には渡さないので、ここは認証を要求する。
+        """
+        try:
+            path = world_store.resolve(name)
+        except WorldBackupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return FileResponse(path, filename=path.name, media_type="application/gzip")
+
+    @app.post("/api/world/backups/{name}/restore", dependencies=auth)
+    async def restore_world_backup(name: str) -> dict[str, Any]:
+        """バックアップでセーブを置き換える。**停止中のみ。**
+
+        稼働中に差し替えても、ゲームが持っているメモリ上の状態で
+        上書きされて消える。ini と同じ理屈。
+        """
+        if await game_server_running():
+            raise HTTPException(
+                409,
+                "ゲームサーバが稼働中です。稼働中に差し替えても、"
+                "サーバが持っている状態で上書きされて失われます。"
+                "サーバを停止してから復元してください。",
+            )
+        try:
+            await asyncio.to_thread(world_store.restore, name)
+        except WorldBackupError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        await notify.send(
+            "ワールドを復元しました",
+            f"{name}\nサーバを起動すると反映されます。",
+            "warn",
+        )
+        return {"result": "ok", "restored": name, "start_required": True}
+
+    @app.delete("/api/world/backups/{name}", dependencies=auth)
+    async def delete_world_backup(name: str) -> dict[str, str]:
+        try:
+            await asyncio.to_thread(world_store.delete, name)
+        except WorldBackupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {"result": "ok", "deleted": name}
 
     @app.get("/api/settings")
     async def get_server_settings(
