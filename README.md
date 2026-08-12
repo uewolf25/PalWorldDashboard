@@ -443,14 +443,19 @@ RESTAPIEnabled=True,RESTAPIPort=8212,AdminPassword="任意のパスワード"
 ### 2. 配置
 
 ```bash
+sudo apt install -y python3-venv rsync
 sudo useradd -r -s /usr/sbin/nologin palmanager
 sudo mkdir -p /opt/dashboard-Pal
-sudo rsync -a --exclude .venv --exclude .dev ./ /opt/dashboard-Pal/
+sudo rsync -a --exclude .venv --exclude .dev --exclude .git ./ /opt/dashboard-Pal/
 cd /opt/dashboard-Pal/backend
-sudo python3.13 -m venv .venv
+sudo python3 -m venv .venv
 sudo .venv/bin/pip install -r requirements.txt
 sudo chown -R palmanager:palmanager /opt/dashboard-Pal
 ```
+
+> 開発と CI は Python 3.13 だが、Ubuntu 24.04 の標準は 3.12。
+> 3.13 固有の構文は使っていないので 3.12 でも動く見込み（未検証）。
+> 揃えたい場合は deadsnakes PPA から 3.13 を入れて `python3.13 -m venv .venv` とする。
 
 ### 3. 環境変数
 
@@ -472,34 +477,73 @@ http://\<サーバIP\>:8080/ で管理画面が開く。
 
 ### 5. 権限まわり（ここは環境に合わせて調整が必要）
 
-管理ツールは `palmanager` ユーザで動くので、そのままでは次の2つができない。
+管理ツールは `palmanager` ユーザで動くので、そのままでは次の3つができない。
 
 **ゲームサーバの systemctl 操作** — sudoers で必要な操作だけ許可する。
 
-```
-# /etc/sudoers.d/dashboard-Pal
-palmanager ALL=(root) NOPASSWD: /bin/systemctl restart palworld.service, \
-                                /bin/systemctl start palworld.service, \
-                                /bin/systemctl stop palworld.service, \
-                                /bin/systemctl is-active palworld.service
+`systemctl` の**パスは環境で変わる**。sudo はコマンドのパスで照合するので、
+ここがずれると `sudo: a password is required` になりサーバ操作が全部失敗する。
+Ubuntu 24.04 は usrmerge 済みで `/usr/bin/systemctl`。
+
+```bash
+command -v systemctl     # まず実パスを確認する
 ```
 
-この場合 `app/services.py` の `systemctl` 呼び出しを `sudo systemctl` に変える必要がある。
-あるいは管理ツール自体を root で動かす（`dashboard-Pal.service` の `User=` を消す）。
+```
+# /etc/sudoers.d/dashboard-Pal   （visudo -f で編集し、visudo -c で検証する）
+palmanager ALL=(root) NOPASSWD: /usr/bin/systemctl start palworld.service, \
+                                /usr/bin/systemctl stop palworld.service, \
+                                /usr/bin/systemctl restart palworld.service, \
+                                /usr/bin/systemctl is-active palworld.service
+```
 
-**`PalWorldSettings.ini` の書き込み** — ファイルのグループを `palmanager` にして
-グループ書き込みを許可するか、`ReadWritePaths` の設定と合わせて調整する。
+そのうえで `/etc/dashboard-Pal.env` に `PAL_SYSTEMCTL_SUDO=true` を設定する。
+**sudoers と環境変数の両方が要る。片方だけでは動かない。**
+
+```bash
+# 実際に通るか確認（パスワードを聞かれたら失敗）
+sudo -u palmanager sudo -n systemctl is-active palworld.service
+```
+
+管理ツール自体を root で動かす手もある（`dashboard-Pal.service` の `User=` を消す）が、
+権限を絞る意味がなくなるので推奨しない。
+
+**`PalWorldSettings.ini` の書き込み** — 管理ツールは inode を保ったまま上書きするので
+（所有者を変えないため）、**ファイル自体への書き込み権限**が要る。
 
 ```bash
 sudo chgrp palmanager /path/to/PalWorldSettings.ini
 sudo chmod g+w /path/to/PalWorldSettings.ini
 ```
 
+あわせて `dashboard-Pal.service` の `ReadWritePaths` を ini の実際の置き場に直すこと
+（既定は `/home/steam/...` の決め打ち）。`ProtectHome=read-only` が効いているので、
+ここが漏れていると**書き込みだけ失敗する**。
+
 **journalctl の閲覧** — ログ画面を使うなら `systemd-journal` グループに入れる。
 
 ```bash
 sudo usermod -aG systemd-journal palmanager
+sudo -u palmanager journalctl -u palworld.service -n 5    # 読めるか確認
 ```
+
+### 6. ゲームサーバ側のユニットも直す
+
+管理ツールではなく **Palworld 側**の `palworld.service` に手を入れる。
+
+- `Restart=always` を**外す** — 管理ツールが停止した直後に systemd が再起動をかけ、
+  ini の書き換えと競合する
+- `TimeoutStopSec=300` を**足す** — ワールド保存の途中で SIGKILL されるとセーブが壊れる
+
+```bash
+sudo systemctl edit --full palworld.service
+sudo systemctl daemon-reload
+```
+
+### 移行前チェックリスト
+
+変更が必要な設定値・ファイルの一覧と、Ubuntu 24.04 での構築手順は
+[Issue #5](https://github.com/uewolf25/PalWorldDashboard/issues/5) にまとめてある。
 
 ## 注意点・既知の制約
 
