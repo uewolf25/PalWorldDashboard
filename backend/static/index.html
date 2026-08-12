@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Palworld Server Manager</title>
 <style>
 :root {
@@ -15,6 +15,8 @@ body {
   margin: 0; background: var(--bg); color: var(--fg);
   font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
   font-size: 14px; line-height: 1.6;
+  /* iOS は横向きにすると本文を勝手に拡大する。表の桁が崩れるので止める */
+  -webkit-text-size-adjust: 100%;
 }
 button, input, select, textarea { font: inherit; color: inherit; }
 .layout { display: flex; min-height: 100vh; }
@@ -39,7 +41,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .statusdot.offline { background: var(--crit); }
 
 /* --- メイン --- */
-.main { flex: 1; min-width: 0; padding: 20px 24px 60px; }
+/* 横向きの iPhone はノッチ側に安全余白が要る（viewport-fit=cover のため） */
+.main {
+  flex: 1; min-width: 0;
+  padding: 20px 24px 60px;
+  padding-top: max(20px, env(safe-area-inset-top));
+  padding-left: max(24px, env(safe-area-inset-left));
+  padding-right: max(24px, env(safe-area-inset-right));
+}
 .topbar { display: none; align-items: center; gap: 12px; margin-bottom: 12px; }
 .hamburger { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
 h1 { font-size: 19px; margin: 0 0 16px; }
@@ -85,8 +94,10 @@ textarea { width: 100%; min-height: 320px; font-family: ui-monospace, "SF Mono",
 }
 .modal {
   background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-  width: 100%; max-width: 520px; max-height: 88vh; display: flex; flex-direction: column;
+  width: 100%; max-width: 520px; display: flex; flex-direction: column;
   box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  /* dvh はアドレスバーの伸縮を含んだ高さ。vh だとモバイルで下がはみ出す */
+  max-height: 88vh; max-height: 88dvh;
 }
 .modal-head { padding: 18px 20px 10px; border-bottom: 1px solid var(--line); }
 .modal-head h3 { margin: 0; font-size: 16px; }
@@ -119,7 +130,12 @@ textarea { width: 100%; min-height: 320px; font-family: ui-monospace, "SF Mono",
 }
 .setting.changed { border-color: var(--accent); background: #1b2430; }
 .setting .head { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
-.setting .name { font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+/* 項目名は長いものだと30文字を超える。折り返せないとカードからはみ出す */
+.setting .head > div { min-width: 0; }
+.setting .name {
+  font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
 .setting .title { font-weight: 600; }
 .setting .help { font-size: 12px; color: var(--muted); }
 .setting input, .setting select { width: 100%; }
@@ -154,14 +170,19 @@ textarea { width: 100%; min-height: 320px; font-family: ui-monospace, "SF Mono",
 }
 .chip.on { background: var(--accent); border-color: var(--accent); color: #08131f; font-weight: 600; }
 
-#toast { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
+#toast {
+  position: fixed; z-index: 200; display: flex; flex-direction: column; gap: 8px;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: calc(16px + env(safe-area-inset-bottom));
+}
 .toast { background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--accent);
   padding: 10px 14px; border-radius: 8px; max-width: 340px; }
 .toast.err { border-left-color: var(--crit); }
 .toast.ok { border-left-color: var(--ok); }
 
 #log { background: #0c0e13; border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 12px; height: 60vh; overflow-y: auto; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  padding: 12px; height: 60vh; height: 60dvh; overflow-y: auto;
+  font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 #log div { white-space: pre-wrap; word-break: break-all; }
 #log .app { color: var(--accent); }
 
@@ -171,11 +192,17 @@ textarea { width: 100%; min-height: 320px; font-family: ui-monospace, "SF Mono",
 .banner.warn { background: #3a3018; border: 1px solid #6d5a2f; }
 
 canvas { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+/* 描画は 900px 幅の座標系で行い、表示側は比率だけ保って伸縮させる。
+   メディアクエリで上書きできるよう、インライン style ではなくここに置く */
+canvas.worldmap { aspect-ratio: 900 / 560; }
+canvas.chart { aspect-ratio: 900 / 200; }
 
 /* --- ログイン画面 --- */
 .login-screen {
-  display: none; position: fixed; inset: 0; z-index: 300;
-  background: var(--bg); align-items: center; justify-content: center; padding: 20px;
+  display: none; position: fixed; inset: 0; z-index: 300; overflow-y: auto;
+  background: var(--bg); align-items: center; justify-content: center;
+  padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
+           calc(20px + env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
 .login-screen.show { display: flex; }
 .login-card {
@@ -193,18 +220,108 @@ canvas { width: 100%; background: var(--panel); border: 1px solid var(--line); b
 .login-submit { width: 100%; margin-top: 6px; }
 
 .backdrop { display: none; }
+
+/* ==========================================================================
+   レスポンシブ（Issue #18）
+
+   iPhone / iPad で詰まりやすいのは次の4つ。
+     - iOS は font-size が 16px 未満の入力欄にフォーカスすると画面を勝手に拡大し、
+       戻してくれない。入力欄だけ 16px にして防ぐ
+     - 列の多い表は幅を詰めると折り返して読めなくなる。縮めずに横スクロールさせる
+     - 指で押す前提だとボタンが小さい。ポインタが粗いときだけ大きくする
+     - ノッチとホームインジケータの下にコンテンツが潜る（safe-area-inset）
+   ========================================================================== */
+
+/* --- タブレット縦（iPad 768px など）: サイドバーは出したまま幅を詰める --- */
+@media (max-width: 900px) {
+  .sidebar { width: 180px; flex-basis: 180px; }
+  .main { padding: 18px 18px 60px; }
+  /* 250px なら iPad mini 縦（本文 528px）でも2列に収まる */
+  .fieldgrid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+
+  /* 表は詰めずに横スクロールさせる。潰すと折り返して桁が読めなくなる。
+     iPad 縦（768px）はサイドバーを引いて 550px ほどしか残らないので、ここから効かせる */
+  .tablewrap { -webkit-overflow-scrolling: touch; }
+  .tablewrap table { min-width: 560px; }
+}
+
+/* --- 横幅が足りない: サイドバーを引き出しにする --- */
 @media (max-width: 700px) {
   .layout { display: block; }
   .topbar { display: flex; }
   .main { padding: 14px 14px 60px; }
   .sidebar {
     position: fixed; inset: 0 auto 0 0; z-index: 40; transform: translateX(-100%);
-    transition: transform .2s ease; width: 240px;
+    transition: transform .2s ease; width: 240px; flex-basis: auto;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+    overflow-y: auto;
   }
   .sidebar.open { transform: none; }
   .backdrop.show { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 30; }
   .cards { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
-  .modal { max-height: 92vh; }
+  .modal { max-height: 92vh; max-height: 92dvh; }
+
+  th, td { padding: 8px; }
+}
+
+/* --- スマートフォン --- */
+@media (max-width: 560px) {
+  h1 { font-size: 17px; }
+  .main { padding: 12px 12px 48px; }
+  .cards { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
+  .card { padding: 12px; }
+  .card .value { font-size: 22px; }
+
+  /* 2列だと1項目の幅が足りず、ラベルと入力欄が潰れる */
+  .fieldgrid { grid-template-columns: 1fr; }
+
+  /* 変更前 → 変更後 を横並びにすると各1/3幅になって読めない。縦に積む。
+     矢印は縦並びだと意味を成さないので消す（打ち消し線と色で分かる） */
+  .difflist .row2 { grid-template-columns: 1fr; gap: 2px; }
+  .difflist .row2 > span { display: none; }
+  .difflist { max-height: 46vh; max-height: 46dvh; }
+
+  /* モーダルは下から出すシート型にする。画面が狭いほど中央寄せは窮屈 */
+  .modal-overlay { padding: 0; align-items: flex-end; }
+  .modal { max-width: none; border-radius: 14px 14px 0 0; max-height: 90vh; max-height: 90dvh; }
+  .modal-head { padding: 16px 16px 10px; }
+  .modal-body { padding: 14px 16px; }
+  .modal-foot {
+    flex-direction: column-reverse; gap: 8px;
+    padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
+  }
+  .modal-foot .btn { width: 100%; }
+
+  /* 右下 340px 固定だと画面幅に対して大きすぎ、本文に被る */
+  #toast { left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right)); }
+  .toast { max-width: none; }
+
+  /* 2つのボタンで1行を分け合う。ホームインジケータに被らせない */
+  .savebar { padding: 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); gap: 8px; }
+  .savebar > button.btn { flex: 1 1 0; }
+
+  .login-card { padding: 24px 20px; }
+  textarea { min-height: 240px; }
+  #log { height: 56vh; height: 56dvh; }
+
+  /* 横長すぎて潰れるので、スマートフォンでは縦に伸ばす */
+  canvas.chart { aspect-ratio: 900 / 380; }
+}
+
+/* --- 指で操作する端末 --- */
+/* 画面幅ではなく入力方式で判定する。狭くしただけのデスクトップには要らない */
+@media (pointer: coarse) {
+  /* iOS は 16px 未満の入力欄にフォーカスすると拡大し、そのまま戻らない。
+     画面から要素がはみ出し、指で縮めるしかなくなる */
+  input[type=text], input[type=number], input[type=date], input[type=time],
+  input[type=password], select, textarea { font-size: 16px; }
+
+  button.btn { padding: 10px 16px; min-height: 44px; }
+  button.btn.small { min-height: 36px; padding: 7px 12px; }
+  .navbtn { padding: 12px; }
+  .catbtn, .chip { padding: 9px 16px; }
+  .hamburger { min-height: 44px; min-width: 44px; }
 }
 </style>
 </head>
@@ -945,7 +1062,7 @@ function renderWorld(root) {
   root.appendChild(el("h1", { text: "ワールド" }));
   root.appendChild(el("div", { class: "muted", style: "margin-bottom:10px",
     text: "REST API が座標を返すのは接続中プレイヤーのみです（パル/NPCは非公開）。" }));
-  const canvas = el("canvas", { width: 900, height: 560, style: "aspect-ratio:900/560" });
+  const canvas = el("canvas", { class: "worldmap", width: 900, height: 560 });
   const alerts = el("div", { style: "margin-top:12px" });
   root.appendChild(canvas);
   root.appendChild(el("h2", { text: "異常検知" }));
@@ -1023,7 +1140,8 @@ function renderHistory(root) {
   ];
   for (const c of charts) {
     root.appendChild(el("h2", { text: c.label }));
-    c.canvas = el("canvas", { width: 900, height: 200, style: "aspect-ratio:900/200" });
+    // 高さ比は CSS で持つ。インライン style だとメディアクエリで上書きできない
+    c.canvas = el("canvas", { class: "chart", width: 900, height: 200 });
     root.appendChild(c.canvas);
   }
   const empty = el("div", { class: "muted", style: "margin-top:12px" });
