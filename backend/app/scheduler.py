@@ -72,6 +72,9 @@ class Schedule:
     # 空/None のときは RestartManager の既定値を使う（古い定義の読み込み用）。
     announce_message: str = ""
     notice_offsets: list[float] | None = None
+    # 次の1回だけ見送る。無効化と違って、その次からはまた動く。
+    # 「今日はメンテを飛ばしたいが明日からは通常どおり」に使う
+    skip_next: bool = False
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def to_store(self) -> dict[str, Any]:
@@ -253,6 +256,22 @@ class ServerScheduler:
         label = sched.label or describe_spec(sched.kind, sched.spec)
         reason = f"予約: {label}"
 
+        if sched.skip_next:
+            # 見送りは1回きり。次からはまた動く
+            sched.skip_next = False
+            if sched.kind == "once":
+                # 1回しか無い予約を見送ったなら、その予約はもう用済み
+                sched.enabled = False
+            self._save()
+            logger.info("スケジュール %s は今回のみ見送りました (%s)", schedule_id, label)
+            await self._announcer.discord_only(
+                "予約を今回だけ見送りました",
+                f"{label}（{ACTION_LABELS.get(sched.action, sched.action)}）",
+                source="schedule",
+                reason=reason,
+            )
+            return
+
         if sched.action == "start":
             # 停止中のサーバにはアナウンスを送れないので、そのまま起動する
             result = await self._service.start()
@@ -377,6 +396,8 @@ class ServerScheduler:
             sched.label = changes["label"]
         if "enabled" in changes and changes["enabled"] is not None:
             sched.enabled = bool(changes["enabled"])
+        if "skip_next" in changes and changes["skip_next"] is not None:
+            sched.skip_next = bool(changes["skip_next"])
         # 動作を変えると予告の要否も変わるので、まとめて検証し直す。
         # ここを飛ばすと「起動の予約を作ってから停止に変える」だけで
         # 無告知の停止予約が作れてしまう

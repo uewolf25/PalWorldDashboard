@@ -156,6 +156,8 @@ class SchedulePatchBody(BaseModel):
     action: str | None = None
     announce_message: str | None = None
     notice_offsets: list[float] | None = None
+    # 次の1回だけ見送る。無効化と違って、その次からはまた動く
+    skip_next: bool | None = None
 
 
 class ServiceActionBody(BaseModel):
@@ -1143,8 +1145,14 @@ def create_app(
     # ---- ログ ----------------------------------------------------------
 
     @app.get("/api/logs")
-    async def get_logs() -> dict[str, Any]:
-        return {"lines": broker.backlog()}
+    async def get_logs(
+        level: str | None = Query(None, pattern="^(info|warn|error)$"),
+    ) -> dict[str, Any]:
+        return {
+            "lines": broker.backlog(level),
+            "counts": broker.level_counts(),
+            "total": len(broker.backlog()),
+        }
 
     @app.websocket("/ws/logs")
     async def ws_logs(websocket: WebSocket) -> None:

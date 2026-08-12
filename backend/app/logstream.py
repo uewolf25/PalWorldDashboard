@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections import deque
 from typing import Any, AsyncIterator
@@ -17,6 +18,37 @@ logger = logging.getLogger(__name__)
 
 MAX_QUEUE = 500
 BACKLOG = 200
+
+# 画面で絞り込むための区分。重い順
+LEVELS = ("error", "warn", "info")
+
+_FROM_LOGGING = {
+    logging.CRITICAL: "error",
+    logging.ERROR: "error",
+    logging.WARNING: "warn",
+    logging.INFO: "info",
+    logging.DEBUG: "info",
+}
+
+# ゲームサーバ側の行には決まった書式が無いので、単語で当たりを付ける。
+# 「0 errors」のような行まで拾ってしまうが、取りこぼすより出しすぎる方がよい
+_ERROR_RE = re.compile(
+    r"\b(error|errors|fatal|critical|exception|traceback|failed|failure)\b", re.I
+)
+_WARN_RE = re.compile(r"\b(warn|warning|deprecated)\b", re.I)
+
+
+def detect_level(line: str) -> str:
+    """行の見た目から区分を推測する。
+
+    管理ツール自身のログは logging の levelno を渡すので、ここは通らない。
+    使うのはゲームサーバ側の行だけ。
+    """
+    if _ERROR_RE.search(line):
+        return "error"
+    if _WARN_RE.search(line):
+        return "warn"
+    return "info"
 
 
 class LogBroker:
@@ -31,8 +63,16 @@ class LogBroker:
 
     # ---- 配信 ----------------------------------------------------------
 
-    def publish(self, line: str, source: str = "server") -> None:
-        record = {"ts": time.time(), "source": source, "line": line.rstrip("\n")}
+    def publish(self, line: str, source: str = "server", level: str | None = None) -> None:
+        text = line.rstrip("\n")
+        record = {
+            "ts": time.time(),
+            "source": source,
+            "line": text,
+            # 呼び出し側が分かっているならそれを使う。管理ツール自身のログは
+            # logging の levelno から確実に決められるので推測しない
+            "level": level if level in LEVELS else detect_level(text),
+        }
         self._backlog.append(record)
         for q in list(self._subscribers):
             if q.full():
@@ -49,12 +89,14 @@ class LogBroker:
         """publish_threadsafe 用に、現在のイベントループを覚えておく。"""
         self._loop = asyncio.get_running_loop()
 
-    def publish_threadsafe(self, line: str, source: str = "app") -> None:
+    def publish_threadsafe(
+        self, line: str, source: str = "app", level: str | None = None
+    ) -> None:
         """別スレッド（logging ハンドラ）から呼ぶ用。"""
         if self._loop is None or self._loop.is_closed():
             return
         try:
-            self._loop.call_soon_threadsafe(self.publish, line, source)
+            self._loop.call_soon_threadsafe(self.publish, line, source, level)
         except RuntimeError:  # pragma: no cover - ループ停止中
             pass
 
@@ -77,8 +119,18 @@ class LogBroker:
     def subscriber_count(self) -> int:
         return len(self._subscribers)
 
-    def backlog(self) -> list[dict[str, Any]]:
-        return list(self._backlog)
+    def backlog(self, level: str | None = None) -> list[dict[str, Any]]:
+        records = list(self._backlog)
+        if level in LEVELS:
+            records = [r for r in records if r["level"] == level]
+        return records
+
+    def level_counts(self) -> dict[str, int]:
+        """区分ごとの件数。画面のフィルタに添えるバッジに使う。"""
+        counts = {name: 0 for name in LEVELS}
+        for record in self._backlog:
+            counts[record["level"]] = counts.get(record["level"], 0) + 1
+        return counts
 
     # ---- 取り込み元 ----------------------------------------------------
 
@@ -164,6 +216,8 @@ class BrokerLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self._broker.publish_threadsafe(self.format(record), source="app")
+            # 自分のログは levelno が分かっているので推測しない
+            level = _FROM_LOGGING.get(record.levelno, "info")
+            self._broker.publish_threadsafe(self.format(record), source="app", level=level)
         except Exception:  # pragma: no cover - ログ配信で例外を出さない
             pass
