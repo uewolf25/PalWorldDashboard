@@ -60,6 +60,8 @@ class Monitor:
         vm = psutil.virtual_memory()
         return {
             "cpu_percent": psutil.cpu_percent(interval=None),
+            # 使用率だけだと「何コアの何%か」が分からない。画面に添えるため持たせる
+            "cpu_count": psutil.cpu_count() or 0,
             "mem_percent": vm.percent,
             "mem_used_mb": round(vm.used / 1024 / 1024),
             "mem_total_mb": round(vm.total / 1024 / 1024),

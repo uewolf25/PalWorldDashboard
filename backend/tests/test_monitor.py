@@ -32,6 +32,12 @@ async def test_sample_records_metrics(monitor, mock_state):
     assert len(monitor.history) == 1
 
 
+async def test_sample_records_the_cpu_count(monitor, mock_state):
+    """使用率だけでは「何コアの何%か」が分からないので、コア数も持たせている。"""
+    record = await monitor.sample()
+    assert record["cpu_count"] >= 1
+
+
 async def test_sample_records_offline_without_raising(monitor, mock_state):
     mock_state.fail_all = True
     record = await monitor.sample()

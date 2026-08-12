@@ -341,6 +341,65 @@ textarea {
   overflow: hidden; text-overflow: ellipsis;
 }
 
+/* --- ダッシュボードの指標カード --- */
+.statcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+.statcard {
+  background: var(--card); border: 1px solid var(--line2);
+  border-radius: var(--radius); padding: 20px; min-width: 0;
+}
+.statcard .k { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 8px; }
+.statcard .v {
+  font-family: var(--mono); font-size: 32px; font-weight: 700; color: #fff;
+  line-height: 1.2; font-variant-numeric: tabular-nums;
+}
+.statcard .v .unit { font-size: 18px; color: var(--muted2); }
+.statcard .foot { font-family: var(--mono); font-size: 11px; color: var(--muted2); margin-top: 8px; }
+.statcard .state { display: flex; align-items: center; gap: 10px; font-size: 22px; font-weight: 900; }
+/* スパークライン。値の読みは大きい数字に任せ、ここは形だけ見せる */
+.statcard svg.spark { width: 100%; height: 26px; margin-top: 14px; display: block; }
+/* 使用率のバー */
+.meter { height: 6px; border-radius: 4px; background: #1c3a55; margin-top: 14px; overflow: hidden; }
+.meter > i { display: block; height: 100%; border-radius: 4px; }
+/* 人数のセグメント。max に対する割合を段階で見せる */
+.segbar { display: flex; gap: 4px; margin-top: 14px; }
+.segbar > span { flex: 1; height: 5px; border-radius: 3px; background: #1c3a55; }
+.segbar > span.on { background: var(--accent); }
+
+/* --- ダッシュボードの2段組 --- */
+.dashgrid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 22px; align-items: start; margin-top: 22px; }
+.dashcol { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.cardhead { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.cardhead .t { font-size: 15px; font-weight: 700; }
+.cardhead .more {
+  margin-left: auto; font-size: 12px; font-weight: 700; color: var(--accent);
+  background: none; border: 0; cursor: pointer; padding: 0;
+}
+.counter { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted2); }
+.counter.over { color: var(--crit); }
+/* 送信先の表示。押せるものと押せないものを見た目で分ける */
+.targets { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 14px; font-size: 12px; }
+.target { display: flex; align-items: center; gap: 7px; color: var(--muted); }
+.target .lamp { width: 9px; height: 9px; border-radius: 50%; background: #1c3a55; }
+.target.on { color: var(--fg2); }
+.target.on .lamp { background: var(--ok); }
+.target.tap { cursor: pointer; }
+.targets .note { margin-left: auto; font-size: 12px; color: var(--muted2); }
+
+/* --- 直近のアクティビティ --- */
+.feed { display: flex; flex-direction: column; gap: 10px; font-family: var(--mono); font-size: 12px; }
+.feed .it { display: grid; grid-template-columns: 62px 56px 1fr; gap: 10px; align-items: baseline; }
+.feed .at { color: #5b7d99; }
+.feed .tag { font-weight: 700; font-size: 11px; }
+.feed .msg { color: #bcd3e5; overflow-wrap: anywhere; }
+
+/* --- 次回の予定 --- */
+.nextcard { background: linear-gradient(160deg, #153854, #102a3f); border-color: #21455f; }
+.nextcard .when { font-family: var(--mono); font-size: 22px; font-weight: 700; color: #fff; }
+.upcoming { display: flex; flex-direction: column; gap: 10px; font-size: 12px; }
+.upcoming .it { display: flex; align-items: center; gap: 10px; }
+.upcoming .at { font-family: var(--mono); color: var(--fg2); }
+.upcoming .rel { margin-left: auto; font-family: var(--mono); color: var(--muted2); }
+
 /* --- 入退室・タイムライン --- */
 .timeline { display: flex; flex-direction: column; gap: 12px; font-family: var(--mono); font-size: 12px; }
 .timeline .ev { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
@@ -441,6 +500,7 @@ canvas.chart { aspect-ratio: 900 / 200; }
   .sidebar { width: 180px; flex-basis: 180px; }
   .view { padding: 20px 18px 60px; }
   .topbar { padding: 14px 18px; }
+  .dashgrid { grid-template-columns: 1fr; }
   /* 250px なら iPad mini 縦（本文 528px）でも2列に収まる */
   .fieldgrid, .pcards { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
   .chartgrid { grid-template-columns: 1fr; }
@@ -468,6 +528,7 @@ canvas.chart { aspect-ratio: 900 / 200; }
   .sidebar.open { transform: none; }
   .backdrop.show { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 30; }
   .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .dashgrid { grid-template-columns: 1fr; gap: 16px; }
   .modal { max-height: 92vh; max-height: 92dvh; }
   th, td { padding: 11px 12px; }
 }
@@ -482,6 +543,10 @@ canvas.chart { aspect-ratio: 900 / 200; }
 
   /* 2列だと1項目の幅が足りず、ラベルと入力欄が潰れる */
   .fieldgrid, .pcards { grid-template-columns: 1fr; }
+  .statcards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .statcard { padding: 14px; }
+  .statcard .v { font-size: 24px; }
+  .feed .it { grid-template-columns: 54px 48px 1fr; gap: 8px; }
 
   /* 変更前 → 変更後 を横並びにすると各1/3幅になって読めない。縦に積む。
      矢印は縦並びだと意味を成さないので消す（打ち消し線と色で分かる） */
@@ -965,7 +1030,8 @@ const state = {
   view: "dashboard",
   config: null,
   status: null,
-  refresher: null,   // 各画面の定期更新タイマー
+  refresher: null,   // 各画面の主タイマー
+  timers: [],        // 同じ画面が持つ追加のタイマー（更新間隔が違うもの）
   statusTimer: null, // 上部バー用。画面を切り替えても止めない
   ws: null,
 };
@@ -973,6 +1039,8 @@ const state = {
 function setView(id) {
   state.view = id;
   if (state.refresher) { clearInterval(state.refresher); state.refresher = null; }
+  for (const t of state.timers) clearInterval(t);
+  state.timers = [];
   if (state.ws) { state.ws.close(); state.ws = null; }
   buildSidebar();
   buildTopbar();
@@ -1144,112 +1212,422 @@ function announcementTable(records) {
 // --------------------------------------------------------------------------
 // ダッシュボード（1秒ごとに自動更新）
 // --------------------------------------------------------------------------
-function card(label, value, sub, cls) {
-  return el("div", { class: "card" }, [
-    el("div", { class: "label", text: label }),
-    el("div", { class: "value " + (cls || ""), text: value }),
-    sub ? el("div", { class: "sub", text: sub }) : null,
+
+/** 折れ線を SVG で描く。カード内の小さな傾向表示用。
+ *
+ *  値の読み取りは隣の大きな数字に任せ、ここでは形だけ見せる。
+ *  そのため軸も目盛りも置かない。
+ */
+function sparkline(values, color) {
+  const W = 120, H = 26;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "spark");
+
+  const nums = values.filter(v => typeof v === "number");
+  if (nums.length < 2) return svg;
+
+  const min = Math.min.apply(null, nums);
+  const max = Math.max.apply(null, nums);
+  // 平坦な系列でも真ん中に線が出るようにする（0除算よけも兼ねる）
+  const span = (max - min) || 1;
+  const pad = 3;
+  const pts = nums.map((v, i) => {
+    const x = (i / (nums.length - 1)) * W;
+    const y = H - pad - ((v - min) / span) * (H - pad * 2);
+    return x.toFixed(1) + "," + y.toFixed(1);
+  }).join(" ");
+
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  line.setAttribute("points", pts);
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", color);
+  line.setAttribute("stroke-width", "2");
+  line.setAttribute("vector-effect", "non-scaling-stroke");
+  svg.appendChild(line);
+  return svg;
+}
+
+function statcard(label, valueNode, footText, extraNode) {
+  return el("div", { class: "statcard" }, [
+    el("div", { class: "k", text: label }),
+    valueNode,
+    extraNode || null,
+    footText ? el("div", { class: "foot", text: footText }) : null,
+  ]);
+}
+
+function bigValue(value, unit, color) {
+  return el("div", { class: "v", style: color ? "color:" + color : "" }, [
+    String(value),
+    unit ? el("span", { class: "unit", text: unit }) : null,
   ]);
 }
 
 function renderDashboard(root) {
-  const cards = el("div", { class: "cards" });
-  const restartBox = el("div", { class: "panel", style: "margin-top:16px" });
+  const cards = el("div", { class: "statcards" });
+  const restartBox = el("div");
+  const announceBox = el("div");
   const historyBox = el("div");
+  const nextBox = el("div");
+  const feedBox = el("div");
 
-  root.appendChild(el("h1", { text: "ダッシュボード" }));
+  root.appendChild(el("div", { class: "pagehead" }, [
+    el("div", null, [
+      el("h1", { text: "ダッシュボード" }),
+      el("div", { class: "lead", text: "サーバの状態と直近の動きをまとめて表示します。" }),
+    ]),
+  ]));
   root.appendChild(cards);
+  root.appendChild(restartBox);
+  root.appendChild(el("div", { class: "dashgrid" }, [
+    el("div", { class: "dashcol" }, [announceBox, historyBox]),
+    el("div", { class: "dashcol" }, [nextBox, feedBox]),
+  ]));
 
   // --- アナウンス送信 ---
-  const announceInput = el("input", { type: "text", placeholder: "全体アナウンス", style: "flex:1;min-width:200px" });
-  const toDiscord = el("input", { type: "checkbox" });
+  const MAX_LEN = 500;   // サーバ側の上限に合わせる
+  const announceInput = el("input", {
+    type: "text", placeholder: "全体に流すメッセージ…", style: "flex:1;min-width:180px",
+  });
+  const counter = el("span", { class: "counter", text: "0 / " + MAX_LEN });
+  let toDiscord = false;
+
+  announceInput.addEventListener("input", () => {
+    const n = [...announceInput.value].length;
+    counter.textContent = n + " / " + MAX_LEN;
+    counter.className = "counter" + (n > MAX_LEN ? " over" : "");
+  });
 
   async function sendAnnounce() {
     const message = announceInput.value.trim();
     if (!message) return;
     try {
-      await post("/api/announce", { message, to_discord: toDiscord.checked });
+      await post("/api/announce", { message, to_discord: toDiscord });
       announceInput.value = "";
+      announceInput.dispatchEvent(new Event("input"));
       toast("アナウンスを送信しました", "ok");
       loadHistory();
+      loadFeed();
     } catch (e) { toast(e.message, "err"); }
   }
   announceInput.addEventListener("keydown", (ev) => { if (ev.key === "Enter") sendAnnounce(); });
 
-  root.appendChild(el("h2", { text: "アナウンス" }));
-  root.appendChild(el("div", { class: "panel" }, [
-    readOnlyNote("アナウンスの送信にはログインが必要です。履歴の閲覧はできます。"),
-    el("div", { class: "row" }, [
-      gate(announceInput),
-      gate(el("button", { class: "btn primary", text: "送信", onclick: sendAnnounce })),
-    ]),
-    el("label", { class: "row muted small", style: "margin-top:8px" },
-      [gate(toDiscord), "Discord にも同じ内容を流す"]),
-  ]));
+  function paintAnnounce() {
+    const cfg = state.config || {};
+    const hasWebhook = !!cfg.discord_webhook_url;
 
-  // サーバ操作のボタンは「サーバ設定」タブに集約している。
-  // ここに出すのは進行中シーケンスの状況だけ。
-  root.appendChild(restartBox);
+    const discordChip = el("span", {
+      class: "target tap" + (toDiscord ? " on" : ""),
+      title: hasWebhook ? "クリックで切り替え" : "DISCORD_WEBHOOK_URL が未設定です",
+      onclick: () => {
+        if (!hasWebhook) { toast("Discord の Webhook が設定されていません", "err"); return; }
+        toDiscord = !toDiscord;
+        paintAnnounce();
+      },
+    }, [el("span", { class: "lamp" }), "Discord"]);
 
-  root.appendChild(el("h2", { text: "アナウンス履歴" }));
-  root.appendChild(historyBox);
-
-  async function loadHistory() {
-    try {
-      const data = await api("/api/announcements?limit=30");
-      clear(historyBox);
-      historyBox.appendChild(announcementTable(data.records));
-    } catch (e) { /* ダッシュボードの主要表示は止めない */ }
+    clear(announceBox);
+    announceBox.appendChild(el("div", { class: "panel" }, [
+      el("div", { class: "cardhead" }, [el("div", { class: "t", text: "アナウンス" }), counter]),
+      readOnlyNote("アナウンスの送信にはログインが必要です。履歴の閲覧はできます。"),
+      el("div", { class: "row", style: "flex-wrap:nowrap" }, [
+        gate(announceInput),
+        gate(el("button", { class: "btn primary", text: "送信", onclick: sendAnnounce })),
+      ]),
+      el("div", { class: "targets" }, [
+        // ゲーム内は常に送る。切り替えられないので押せる見た目にしない
+        el("span", { class: "target on" }, [el("span", { class: "lamp" }), "ゲーム内"]),
+        hasWebhook ? discordChip
+                   : el("span", { class: "target", title: "DISCORD_WEBHOOK_URL が未設定です" },
+                        [el("span", { class: "lamp" }), "Discord（未設定）"]),
+        el("span", { class: "note", text: announceNote }),
+      ]),
+    ]));
   }
 
-  function paint(s) {
-    clear(cards);
-    const m = s.metrics || {}, h = s.host || {};
-    const memCls = h.mem_percent >= 90 ? "crit" : h.mem_percent >= 80 ? "warn" : "";
-    cards.appendChild(card("状態", s.online ? "稼働中" : "応答なし", s.error || "", s.online ? "ok" : "crit"));
-    cards.appendChild(card("サーバFPS", m.serverfps !== undefined ? m.serverfps : "-",
-      m.serverframetime !== undefined ? "フレーム時間 " + m.serverframetime + "ms" : ""));
-    cards.appendChild(card("プレイヤー",
-      (m.currentplayernum !== undefined ? m.currentplayernum : "-") + " / " + (m.maxplayernum !== undefined ? m.maxplayernum : "-")));
-    cards.appendChild(card("稼働時間", fmtDuration(m.uptime)));
-    cards.appendChild(card("CPU使用率", (h.cpu_percent !== undefined ? h.cpu_percent.toFixed(1) : "-") + "%"));
-    cards.appendChild(card("メモリ使用率", (h.mem_percent !== undefined ? h.mem_percent.toFixed(1) : "-") + "%",
-      h.mem_used_mb + "MB / " + h.mem_total_mb + "MB", memCls));
+  // 直近の Discord 送信の結果。連携が生きているかの手掛かりにする
+  let announceNote = "";
 
+  // --- アナウンス履歴 ---
+  let historyLimit = 5;
+  async function loadHistory() {
+    let data;
+    try { data = await api("/api/announcements?limit=30"); }
+    catch (e) { return; }
+
+    const records = data.records;
+    const lastDiscord = records.find(r => r.to_discord);
+    announceNote = !(state.config && state.config.discord_webhook_url)
+      ? "Discord は未設定です"
+      : lastDiscord
+        ? (lastDiscord.ok ? "Discord 連携は正常（最終送信 " + fmtClock(lastDiscord.ts) + "）"
+                          : "直近の Discord 送信に失敗しています")
+        : "Discord へはまだ送信していません";
+    paintAnnounce();
+
+    clear(historyBox);
+    const head = el("div", { class: "cardhead" }, [
+      el("div", { class: "t", text: "アナウンス履歴" }),
+      records.length > 5 ? el("button", {
+        class: "more", text: historyLimit === 5 ? "すべて表示" : "折りたたむ",
+        onclick: () => { historyLimit = historyLimit === 5 ? 30 : 5; loadHistory(); },
+      }) : null,
+    ]);
+    historyBox.appendChild(el("div", { class: "panel", style: "padding:22px 0 0" }, [
+      el("div", { style: "padding:0 22px" }, head),
+      records.length
+        ? announcementTable(records.slice(0, historyLimit))
+        : el("div", { class: "muted", style: "padding:0 22px 22px", text: "アナウンス履歴はまだありません" }),
+    ]));
+  }
+
+  // --- 次回の予定 ---
+  async function loadNext() {
+    let data;
+    try { data = await api("/api/schedules"); }
+    catch (e) { return; }
+
+    const active = data.schedules.filter(s => s.enabled && s.next_action_at);
+    clear(nextBox);
+
+    if (!active.length) {
+      nextBox.appendChild(el("div", { class: "panel" }, [
+        el("div", { class: "cardhead" }, [
+          el("div", { class: "t", text: "次回の予定" }),
+          el("button", { class: "more", text: "スケジュール", onclick: () => setView("schedules") }),
+        ]),
+        el("div", { class: "muted small", text: "有効な予約はありません" }),
+      ]));
+      return;
+    }
+
+    const next = active[0];
+    const remain = Math.max(0, (new Date(next.next_action_at).getTime() - Date.now()) / 1000);
+    const rest = active.slice(1, 4);
+
+    nextBox.appendChild(el("div", { class: "panel nextcard" }, [
+      el("div", { class: "cardhead" }, [
+        el("div", { class: "t", text: "次回の予定" }),
+        el("button", { class: "more", text: "スケジュール", onclick: () => setView("schedules") }),
+      ]),
+      el("div", { class: "row", style: "gap:8px;margin-bottom:10px" }, [
+        el("span", { class: "tag-changed", text: next.action_label }),
+        el("span", { class: "tag-added", style: "background:#17334b;color:#9dbdd6",
+          text: { daily: "毎日", once: "単発", cron: "cron" }[next.kind] || next.kind }),
+        next.skip_next ? el("span", { class: "tag-unknown", text: "今回は見送り" }) : null,
+      ]),
+      el("div", { class: "when", text: fmtTime(next.next_action_at) }),
+      el("div", { class: "mono small muted", style: "margin-top:8px",
+        text: next.skip_next ? "この回は実行されません" : "あと " + fmtDuration(remain) }),
+      el("div", { class: "small muted", style: "margin-top:12px" }, [
+        next.announced && next.notice_offsets && next.notice_offsets.length
+          ? "予告 " + next.notice_offsets.map(offsetLabel).join(" / ") : "予告なし",
+        next.pending_changes ? " ・ 設定変更 " + next.pending_changes + " 件を同時反映" : null,
+      ]),
+      el("div", { class: "row", style: "margin-top:16px" }, [
+        gate(el("button", {
+          class: "btn small", text: "編集", style: "flex:1",
+          onclick: () => setView("schedules"),
+        })),
+        gate(el("button", {
+          class: "btn small", text: next.skip_next ? "見送りをやめる" : "今回はスキップ",
+          style: "flex:1",
+          onclick: async () => {
+            try {
+              await patch("/api/schedules/" + next.id, { skip_next: !next.skip_next });
+              toast(next.skip_next ? "見送りを取り消しました" : "次の1回だけ見送ります", "ok");
+              loadNext();
+            } catch (e) { toast(e.message, "err"); }
+          },
+        })),
+      ]),
+      rest.length ? el("div", { style: "border-top:1px solid var(--line);margin:18px 0 14px" }) : null,
+      rest.length ? el("div", { class: "small muted", style: "margin-bottom:10px", text: "そのあとの予定" }) : null,
+      rest.length ? el("div", { class: "upcoming" }, rest.map(s => el("div", { class: "it" }, [
+        el("span", { class: "tag-added", style: "background:#17334b;color:#9dbdd6", text: s.action_label }),
+        el("span", { class: "at", text: fmtTime(s.next_action_at).replace(/^\d{4}\//, "") }),
+        el("span", { class: "rel",
+          text: fmtDuration(Math.max(0, (new Date(s.next_action_at).getTime() - Date.now()) / 1000)) + "後" }),
+      ]))) : null,
+    ]));
+  }
+
+  // --- 直近のアクティビティ ---
+  /** 入退室・アナウンス・ログを1本の時系列にまとめる。
+   *
+   *  それぞれ別の画面に散っているものを、起きた順に並べ直すだけ。
+   *  専用の API は作らず、既にあるものを混ぜている。
+   */
+  async function loadFeed() {
+    let events = [], announces = [], logs = [];
+    try {
+      const [e, a, l] = await Promise.all([
+        api("/api/players/events?limit=10"),
+        api("/api/announcements?limit=10"),
+        api("/api/logs"),
+      ]);
+      events = e.events; announces = a.records; logs = l.lines;
+    } catch (err) { return; }
+
+    const items = [];
+    for (const e of events) {
+      items.push({
+        ts: e.ts,
+        tag: e.kind === "join" ? "JOIN" : "LEFT",
+        color: e.kind === "join" ? "var(--ok)" : "var(--crit)",
+        msg: e.name + (e.kind === "join" ? " が参加しました" : " が退出しました"),
+      });
+    }
+    for (const a of announces) {
+      const to = [a.to_game ? "ゲーム内" : null, a.to_discord ? "Discord" : null].filter(Boolean).join(" / ");
+      items.push({
+        ts: a.ts,
+        tag: a.ok ? "SEND" : "FAIL",
+        color: a.ok ? "#7fd1ff" : "var(--crit)",
+        msg: "アナウンス「" + a.message + "」" + (to ? " " + to : ""),
+      });
+    }
+    for (const l of logs.slice(-20)) {
+      items.push({
+        ts: l.ts,
+        tag: (l.level || "info").toUpperCase(),
+        color: l.level === "error" ? "var(--crit)" : l.level === "warn" ? "var(--warn)" : "var(--muted)",
+        msg: l.line,
+      });
+    }
+    items.sort((a, b) => b.ts - a.ts);
+
+    clear(feedBox);
+    feedBox.appendChild(el("div", { class: "panel" }, [
+      el("div", { class: "cardhead" }, [
+        el("div", { class: "t", text: "直近のアクティビティ" }),
+        el("button", { class: "more", text: "ログ", onclick: () => setView("logs") }),
+      ]),
+      items.length
+        ? el("div", { class: "feed" }, items.slice(0, 12).map(i => el("div", { class: "it" }, [
+            el("span", { class: "at", text: fmtClock(i.ts) }),
+            el("span", { class: "tag", style: "color:" + i.color, text: i.tag }),
+            el("span", { class: "msg", text: i.msg }),
+          ])))
+        : el("div", { class: "muted small", text: "まだ動きがありません" }),
+    ]));
+  }
+
+  // --- 指標カード ---
+  let sparks = { fps: [], cpu: [], playersPeak: null };
+
+  function paint(s) {
+    const m = s.metrics || {}, h = s.host || {};
+    clear(cards);
+
+    // 状態
+    const online = s.online;
+    cards.appendChild(statcard("状態",
+      el("div", { class: "state", style: "color:" + (online ? "var(--ok)" : "var(--crit)") }, [
+        el("span", { class: "statusdot " + (online ? "online" : "offline") }),
+        el("span", { text: online ? "稼働中" : "応答なし" }),
+      ]),
+      lastSavedText,
+    ));
+
+    // サーバFPS
+    cards.appendChild(statcard("サーバFPS",
+      bigValue(m.serverfps !== undefined ? m.serverfps : "-", "", "var(--accent)"),
+      m.serverframetime !== undefined ? m.serverframetime + "ms" : "",
+      sparkline(sparks.fps, "#4cc2ff"),
+    ));
+
+    // プレイヤー
+    const cur = m.currentplayernum, max = m.maxplayernum;
+    const SEGMENTS = 6;
+    const lit = (typeof cur === "number" && typeof max === "number" && max > 0)
+      ? Math.min(SEGMENTS, cur === 0 ? 0 : Math.max(1, Math.ceil(cur / max * SEGMENTS)))
+      : 0;
+    const seg = el("div", { class: "segbar" });
+    for (let i = 0; i < SEGMENTS; i++) {
+      seg.appendChild(el("span", { class: i < lit ? "on" : "" }));
+    }
+    cards.appendChild(statcard("プレイヤー",
+      el("div", { class: "v" }, [
+        String(cur !== undefined ? cur : "-"),
+        el("span", { class: "unit", text: " / " + (max !== undefined ? max : "-") }),
+      ]),
+      sparks.playersPeak !== null ? "直近1hのピーク " + sparks.playersPeak : "",
+      seg,
+    ));
+
+    // CPU
+    cards.appendChild(statcard("CPU",
+      bigValue(h.cpu_percent !== undefined ? h.cpu_percent.toFixed(1) : "-", "%"),
+      h.cpu_count ? h.cpu_count + " vCPU" : "",
+      sparkline(sparks.cpu, "#5b86a8"),
+    ));
+
+    // メモリ
+    const mem = h.mem_percent;
+    const memColor = mem >= 90 ? "var(--crit)" : mem >= 80 ? "var(--warn)" : "#fff";
+    const bar = el("div", { class: "meter" },
+      el("i", {
+        style: "width:" + Math.min(100, mem || 0) + "%;background:"
+          + (mem >= 90 ? "linear-gradient(90deg,#ff8fa3,#e5566e)"
+             : mem >= 80 ? "linear-gradient(90deg,#ffc44d,#f2a25c)"
+             : "linear-gradient(90deg,#4cc2ff,#67c7f5)"),
+      }));
+    cards.appendChild(statcard("メモリ",
+      bigValue(mem !== undefined ? mem.toFixed(1) : "-", "%", memColor),
+      h.mem_used_mb !== undefined
+        ? h.mem_used_mb.toLocaleString() + " / " + h.mem_total_mb.toLocaleString() + " MB" : "",
+      bar,
+    ));
+
+    // 進行中のシーケンス
     clear(restartBox);
     const r = s.restart || {};
     if (r.in_progress) {
       const remain = r.seconds_remaining;
-      restartBox.appendChild(el("div", { class: "row" }, [
-        el("strong", { text: r.mode_label + "シーケンス進行中" }),
-        el("span", { class: "muted", text: "(" + r.phase + ") " + r.message }),
-        remain !== null && remain !== undefined ? el("span", { text: "残り " + fmtDuration(remain) }) : null,
-        r.cancellable ? gate(el("button", {
-          class: "btn danger", text: "キャンセル",
-          onclick: () => openModal({
-            title: r.mode_label + "をキャンセルします",
-            lead: "予告済みのプレイヤーにキャンセルを通知します。",
-            confirmLabel: "キャンセルする",
-            async onConfirm() {
-              await post("/api/restart/cancel");
-              toast(r.mode_label + "をキャンセルしました", "ok");
-              loadHistory();
-            },
-          }),
-        })) : null,
-      ]));
+      restartBox.appendChild(el("div", { class: "panel", style: "margin-top:16px" },
+        el("div", { class: "row" }, [
+          el("strong", { text: r.mode_label + "シーケンス進行中" }),
+          el("span", { class: "muted", text: "(" + r.phase + ") " + r.message }),
+          remain !== null && remain !== undefined ? el("span", { class: "mono", text: "残り " + fmtDuration(remain) }) : null,
+          r.cancellable ? gate(el("button", {
+            class: "btn small danger", text: "キャンセル",
+            onclick: () => openModal({
+              title: r.mode_label + "をキャンセルします",
+              lead: "予告済みのプレイヤーにキャンセルを通知します。",
+              confirmLabel: "キャンセルする",
+              async onConfirm() {
+                await post("/api/restart/cancel");
+                toast(r.mode_label + "をキャンセルしました", "ok");
+                loadHistory();
+              },
+            }),
+          })) : null,
+        ])));
       showBanner(r.mode_label + "シーケンスが進行中です: " + r.message, "warn");
     } else {
-      restartBox.appendChild(el("div", { class: "row" }, [
-        el("span", { class: "muted", text: "直近の実行: " + (r.phase && r.phase !== "idle"
-          ? r.mode_label + " / " + r.phase + " / " + (r.message || "") : "なし") }),
-        el("button", {
-          class: "btn small", text: "サーバ操作へ",
-          onclick: () => setView("settings"),
-        }),
-      ]));
       showBanner(s.online ? "" : "Palworld サーバに接続できません: " + (s.error || ""), "crit");
     }
+  }
+
+  // スパークラインと「直近1hのピーク」は履歴から作る。
+  // 1秒ごとに取り直す必要はないので、更新はゆっくりでよい
+  let lastSavedText = "";
+  async function loadTrends() {
+    try {
+      const data = await api("/api/history?minutes=60");
+      sparks.fps = data.records.map(r => r.fps).filter(v => typeof v === "number").slice(-40);
+      sparks.cpu = data.records.map(r => r.cpu_percent).filter(v => typeof v === "number").slice(-40);
+      const nums = data.records.map(r => r.players).filter(v => typeof v === "number");
+      sparks.playersPeak = nums.length ? Math.max.apply(null, nums) : null;
+    } catch (e) { /* 指標カードは status だけでも出る */ }
+
+    try {
+      const w = await api("/api/world/backups");
+      lastSavedText = w.last_saved_at ? "最終保存 " + fmtTime(w.last_saved_at) : "";
+    } catch (e) { /* セーブ情報が無くてもカードは出す */ }
   }
 
   let wasInProgress = false;
@@ -1261,15 +1639,23 @@ function renderDashboard(root) {
       buildTopbar();   // 1秒ごとに見ているので、上部バーもここで更新する
       // シーケンスが終わったタイミングで履歴を取り直す
       const now = !!(s.restart && s.restart.in_progress);
-      if (wasInProgress && !now) loadHistory();
+      if (wasInProgress && !now) { loadHistory(); loadNext(); loadFeed(); }
       wasInProgress = now;
     } catch (e) {
       showBanner("管理ツールへの接続に失敗しました: " + e.message, "crit");
     }
   }
-  tick();
+
+  paintAnnounce();
+  loadTrends().then(tick);
   loadHistory();
+  loadNext();
+  loadFeed();
+
   state.refresher = setInterval(tick, 1000);
+  // 傾向・予定・アクティビティは1秒ごとに取り直す必要がない。
+  // ここを速くするとゲームサーバではなく管理ツール側の負荷になる
+  state.timers.push(setInterval(() => { loadTrends(); loadNext(); loadFeed(); }, 30000));
 }
 
 // --------------------------------------------------------------------------
