@@ -32,6 +32,7 @@ from .monitor import Monitor
 from .notify import DiscordNotifier
 from .palapi import PalApiError, PalworldClient
 from .pending import ApplyResult, PendingChangeStore
+from .presence import PresenceTracker
 from .restart import (
     RestartDebounced,
     RestartInProgress,
@@ -41,6 +42,7 @@ from .restart import (
 from .scheduler import ACTION_LABELS, ACTIONS, ScheduleError, ServerScheduler
 from .services import build_service
 from .settings_ini import SettingsIniError, SettingsIniStore
+from .world import WorldBackupError, WorldStore
 from .settings_schema import (
     CATEGORIES,
     add_custom_fields,
@@ -154,6 +156,8 @@ class SchedulePatchBody(BaseModel):
     action: str | None = None
     announce_message: str | None = None
     notice_offsets: list[float] | None = None
+    # 次の1回だけ見送る。無効化と違って、その次からはまた動く
+    skip_next: bool | None = None
 
 
 class ServiceActionBody(BaseModel):
@@ -200,6 +204,9 @@ def create_app(
         use_sudo=cfg.pal_systemctl_sudo,
     )
     ini_store = SettingsIniStore(cfg.pal_settings_ini, cfg.backup_dir, keep=cfg.backup_keep)
+    world_store = WorldStore(
+        cfg.pal_save_dir, cfg.world_backup_dir, keep=cfg.world_backup_keep
+    )
     # ログインのセッション。鍵はファイルに永続化して、再起動でログインが
     # 切れないようにする
     session_secret = load_or_create_secret(cfg.session_secret_file, cfg.app_session_secret)
@@ -224,6 +231,17 @@ def create_app(
     announce_log = AnnouncementLog(cfg.announce_store, limit=cfg.announce_history_limit)
     announcer = Announcer(pal, notify, announce_log)
     pending = PendingChangeStore(cfg.pending_store, limit=cfg.pending_limit)
+    presence = PresenceTracker(cfg.presence_store, limit=cfg.presence_history_limit)
+
+    async def _fetch_players() -> list[dict[str, Any]]:
+        """プレイヤー一覧の取得口。ここを通れば必ず入退室が記録される。
+
+        REST API に入退室イベントは無いので、スナップショットの差分で作るしかない。
+        取得口を1つに絞っておかないと、経路によって記録されたりされなかったりする。
+        """
+        players = await pal.players()
+        presence.observe(players)
+        return players
 
     async def apply_pending_changes(schedule_id: str | None) -> ApplyResult:
         """サーバ停止中に呼ばれ、保留していた設定変更を ini へ書き込む。
@@ -268,6 +286,19 @@ def create_app(
     )
     # シーケンス進行中も同様に抑止する（猶予の計算に取りこぼしがあっても効くように）
     monitor.set_maintenance_probe(lambda: restart_manager.in_progress)
+
+    async def _observe_presence() -> None:
+        """監視ループから入退室を観測する。
+
+        画面のポーリング任せにすると、誰も開いていない間の出入りが丸ごと
+        抜ける。サーバが落ちているときは取れないので黙って諦める。
+        """
+        try:
+            await players_cache.get(_fetch_players)
+        except PalApiError:
+            pass
+
+    monitor.set_after_sample(_observe_presence)
     scheduler = ServerScheduler(
         restart_manager,
         service,
@@ -533,8 +564,28 @@ def create_app(
     @app.get("/api/players")
     async def get_players() -> dict[str, Any]:
         # プレイヤータブとワールドタブが同時に見るので、ここも合流させる
-        players = await players_cache.get(pal.players)
-        return {"players": players, "count": len(players)}
+        players = await players_cache.get(_fetch_players)
+        return {
+            "players": presence.annotate(players),
+            "count": len(players),
+        }
+
+    @app.get("/api/players/events")
+    async def get_presence_events(
+        limit: int = Query(50, ge=1, le=500),
+        kind: str | None = Query(None, pattern="^(join|leave)$"),
+    ) -> dict[str, Any]:
+        """入退室の履歴。
+
+        REST API に入退室イベントは無いため、一覧のスナップショットの差分から
+        組み立てている。取得の間隔より短い出入りは記録されない。
+        """
+        return {
+            "events": presence.list(limit=limit, kind=kind),
+            "total": len(presence),
+            # 画面で「取りこぼしがありうる」ことを説明するために返す
+            "poll_interval": cfg.monitor_interval,
+        }
 
     @app.post("/api/players/kick", dependencies=auth)
     async def kick_player(body: PlayerActionBody) -> dict[str, Any]:
@@ -542,6 +593,7 @@ def create_app(
             return {"result": "skipped", "reason": "dry_run", "userid": body.userid}
         await pal.kick(body.userid, body.message)
         players_cache.invalidate()   # 消えた直後に古い一覧を見せない
+        presence.forget(body.userid)  # 次の観測を待たずに退出として確定させる
         await notify.send("プレイヤーをキックしました", f"{body.userid}\n{body.message}", "warn")
         return {"result": "ok", "userid": body.userid}
 
@@ -551,6 +603,7 @@ def create_app(
             return {"result": "skipped", "reason": "dry_run", "userid": body.userid}
         await pal.ban(body.userid, body.message)
         players_cache.invalidate()
+        presence.forget(body.userid)
         await notify.send("プレイヤーをBANしました", f"{body.userid}\n{body.message}", "warn")
         return {"result": "ok", "userid": body.userid}
 
@@ -566,7 +619,7 @@ def create_app(
         REST API はパル/NPC の位置を公開していないため、
         ここで返すのはプレイヤーの座標と異常検知のみ。
         """
-        players = await players_cache.get(pal.players)
+        players = await players_cache.get(_fetch_players)
         points = []
         anomalies = []
         for p in players:
@@ -618,6 +671,102 @@ def create_app(
     async def save_world() -> dict[str, str]:
         await pal.save()
         return {"result": "ok"}
+
+    # ---- ワールドセーブ --------------------------------------------------
+
+    @app.get("/api/world/backups")
+    async def list_world_backups() -> dict[str, Any]:
+        """セーブの状況とバックアップ一覧。
+
+        サイズの集計はディレクトリ全体を歩くので、数百MBあると数十ms〜かかる。
+        イベントループを止めないようスレッドに逃がす。
+        """
+        stats = await asyncio.to_thread(world_store.stats)
+        backups = await asyncio.to_thread(world_store.list_backups)
+        return {
+            **stats,
+            "backups": [b.as_dict() for b in backups],
+            "keep": cfg.world_backup_keep,
+            # 復元できるかの判定に使う
+            "server_running": await game_server_running(),
+        }
+
+    @app.post("/api/world/backups", dependencies=auth)
+    async def create_world_backup() -> dict[str, Any]:
+        """セーブディレクトリを固める。
+
+        稼働中でも取れるようにしてあるが、その場合は先にワールド保存を挟む。
+        ゲームが書いている最中のファイルを固めると中身が食い違うため。
+        それでも停止中に取る方が確実であることは画面に出している。
+        """
+        saved = False
+        if await game_server_running():
+            try:
+                await pal.save()
+                saved = True
+            except PalApiError as exc:
+                # 保存できなくてもバックアップ自体は取る。
+                # 「取れなかった」より「少し古いかもしれない」方がまし
+                logger.warning("バックアップ前のワールド保存に失敗: %s", exc)
+
+        try:
+            backup = await asyncio.to_thread(world_store.create)
+        except WorldBackupError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        await notify.send(
+            "ワールドをバックアップしました",
+            f"{backup.name}\n{backup.size / 1024 / 1024:.1f} MB",
+            "info",
+        )
+        return {"result": "ok", "backup": backup.as_dict(), "world_saved_first": saved}
+
+    @app.get("/api/world/backups/{name}/download", dependencies=auth)
+    async def download_world_backup(name: str) -> FileResponse:
+        """バックアップをダウンロードする。
+
+        中身はワールドそのもので、伏字にできる類のものでもない。
+        閲覧しかできない相手には渡さないので、ここは認証を要求する。
+        """
+        try:
+            path = world_store.resolve(name)
+        except WorldBackupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return FileResponse(path, filename=path.name, media_type="application/gzip")
+
+    @app.post("/api/world/backups/{name}/restore", dependencies=auth)
+    async def restore_world_backup(name: str) -> dict[str, Any]:
+        """バックアップでセーブを置き換える。**停止中のみ。**
+
+        稼働中に差し替えても、ゲームが持っているメモリ上の状態で
+        上書きされて消える。ini と同じ理屈。
+        """
+        if await game_server_running():
+            raise HTTPException(
+                409,
+                "ゲームサーバが稼働中です。稼働中に差し替えても、"
+                "サーバが持っている状態で上書きされて失われます。"
+                "サーバを停止してから復元してください。",
+            )
+        try:
+            await asyncio.to_thread(world_store.restore, name)
+        except WorldBackupError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        await notify.send(
+            "ワールドを復元しました",
+            f"{name}\nサーバを起動すると反映されます。",
+            "warn",
+        )
+        return {"result": "ok", "restored": name, "start_required": True}
+
+    @app.delete("/api/world/backups/{name}", dependencies=auth)
+    async def delete_world_backup(name: str) -> dict[str, str]:
+        try:
+            await asyncio.to_thread(world_store.delete, name)
+        except WorldBackupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {"result": "ok", "deleted": name}
 
     @app.get("/api/settings")
     async def get_server_settings(
@@ -996,8 +1145,14 @@ def create_app(
     # ---- ログ ----------------------------------------------------------
 
     @app.get("/api/logs")
-    async def get_logs() -> dict[str, Any]:
-        return {"lines": broker.backlog()}
+    async def get_logs(
+        level: str | None = Query(None, pattern="^(info|warn|error)$"),
+    ) -> dict[str, Any]:
+        return {
+            "lines": broker.backlog(level),
+            "counts": broker.level_counts(),
+            "total": len(broker.backlog()),
+        }
 
     @app.websocket("/ws/logs")
     async def ws_logs(websocket: WebSocket) -> None:

@@ -125,7 +125,7 @@ class SettingsIniStore:
             dest = self.backup_dir / f"PalWorldSettings.{stamp}-{n}.ini"
             n += 1
         dest.write_text(text, encoding="utf-8")
-        self._prune()
+        self._prune(keep_always=dest)
         st = dest.stat()
         return BackupInfo(
             name=dest.name,
@@ -134,10 +134,24 @@ class SettingsIniStore:
             created_at=datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
         )
 
-    def _prune(self) -> None:
-        backups = sorted(self.backup_dir.glob("PalWorldSettings.*.ini"))
+    def _prune(self, keep_always: Path | None = None) -> None:
+        """古い方から間引く。
+
+        名前順ではなく更新時刻順で並べる。同じ秒に2回保存すると
+        `PalWorldSettings.<stamp>.ini` と `...<stamp>-1.ini` が混ざり、
+        名前順だと後から作った方が先頭（＝古い扱い）に来てしまう（`-` < `.`）。
+        """
+        def sort_key(p: Path) -> tuple[float, str]:
+            try:
+                return (p.stat().st_mtime, p.name)
+            except OSError:
+                return (0.0, p.name)
+
+        backups = sorted(self.backup_dir.glob("PalWorldSettings.*.ini"), key=sort_key)
         excess = len(backups) - self.keep
         for path in backups[:excess]:
+            if keep_always is not None and path == keep_always:
+                continue
             try:
                 path.unlink()
             except OSError as exc:  # pragma: no cover - 権限まわりの保険

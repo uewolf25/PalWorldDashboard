@@ -440,31 +440,77 @@ RESTAPIEnabled=True,RESTAPIPort=8212,AdminPassword="任意のパスワード"
 > REST API はインターネットに直接公開しない前提で作られている（Pocketpair の注意書き）。
 > LAN 内、もしくは VPN 越しでのみ到達できるようにすること。
 
-### 2. 配置
+### 2. Python 3.13 を anyenv + pyenv で用意する
+
+開発と CI は Python 3.13 だが、**Ubuntu 24.04 の標準は 3.12**。
+OS の `python3` を入れ替えずに 3.13 を用意するため、anyenv 経由で pyenv を入れる。
+
+サービスユーザ `palmanager` はログインシェルも home も持たないので、
+**個人の home ではなく `/opt/anyenv` に置いて誰からでも読めるようにする**
+（`/root/.anyenv` だと 700 で palmanager から実行できない）。
 
 ```bash
-sudo apt install -y python3-venv rsync
+# pyenv は Python をソースからビルドするので、その依存を先に入れる
+sudo apt update
+sudo apt install -y git curl rsync build-essential \
+  libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
+  libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev
+```
+
+```bash
+sudo git clone https://github.com/anyenv/anyenv /opt/anyenv
+
+# どのシェルからも見えるようにしておく
+sudo tee /etc/profile.d/anyenv.sh >/dev/null <<'EOF'
+export ANYENV_ROOT=/opt/anyenv
+export PATH="$ANYENV_ROOT/bin:$PATH"
+eval "$(anyenv init -)"
+EOF
+
+sudo -i                          # 以降は root で
+. /etc/profile.d/anyenv.sh
+anyenv install --force-init      # インストール定義を取得する
+anyenv install pyenv
+. /etc/profile.d/anyenv.sh       # pyenv を PATH に載せ直す
+
+pyenv install -l | grep -E '^\s+3\.13\.' | tail -3    # 最新のパッチを確認
+pyenv install 3.13.5                                  # ← 確認した版に読み替える
+pyenv global 3.13.5
+
+chmod -R a+rX /opt/anyenv        # palmanager から読める・実行できるように
+exit
+```
+
+`pyenv global` が変えるのは pyenv の shim だけで、`/usr/bin/python3` はそのまま。
+OS 側のツールには影響しない。
+
+### 3. 配置
+
+```bash
 sudo useradd -r -s /usr/sbin/nologin palmanager
 sudo mkdir -p /opt/dashboard-Pal
 sudo rsync -a --exclude .venv --exclude .dev --exclude .git ./ /opt/dashboard-Pal/
+
 cd /opt/dashboard-Pal/backend
-sudo python3 -m venv .venv
+sudo /opt/anyenv/envs/pyenv/versions/3.13.5/bin/python3 -m venv .venv
 sudo .venv/bin/pip install -r requirements.txt
 sudo chown -R palmanager:palmanager /opt/dashboard-Pal
+
+.venv/bin/python -V              # 3.13.x であることを確認
 ```
 
-> 開発と CI は Python 3.13 だが、Ubuntu 24.04 の標準は 3.12。
-> 3.13 固有の構文は使っていないので 3.12 でも動く見込み（未検証）。
-> 揃えたい場合は deadsnakes PPA から 3.13 を入れて `python3.13 -m venv .venv` とする。
+> venv は**作成に使った pyenv の python を絶対パスで参照する**。
+> あとから `pyenv uninstall 3.13.5` したりパッチを上げたりすると `.venv` が壊れて
+> サービスが起動しなくなる。Python を入れ替えたときは venv を作り直すこと。
 
-### 3. 環境変数
+### 4. 環境変数
 
 ```bash
 sudo install -o root -g root -m 600 dashboard-Pal.env.example /etc/dashboard-Pal.env
 sudo nano /etc/dashboard-Pal.env   # PAL_ADMIN_PASSWORD などを埋める
 ```
 
-### 4. systemd 登録
+### 5. systemd 登録
 
 ```bash
 sudo cp dashboard-Pal.service /etc/systemd/system/
@@ -475,7 +521,7 @@ sudo systemctl status dashboard-Pal
 
 http://\<サーバIP\>:8080/ で管理画面が開く。
 
-### 5. 権限まわり（ここは環境に合わせて調整が必要）
+### 6. 権限まわり（ここは環境に合わせて調整が必要）
 
 管理ツールは `palmanager` ユーザで動くので、そのままでは次の3つができない。
 
@@ -527,7 +573,7 @@ sudo usermod -aG systemd-journal palmanager
 sudo -u palmanager journalctl -u palworld.service -n 5    # 読めるか確認
 ```
 
-### 6. ゲームサーバ側のユニットも直す
+### 7. ゲームサーバ側のユニットも直す
 
 管理ツールではなく **Palworld 側**の `palworld.service` に手を入れる。
 

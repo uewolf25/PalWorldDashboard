@@ -3,18 +3,57 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="stylesheet" href="/static/fonts/fonts.css">
 <title>Palworld Server Manager</title>
 <style>
+/* ==========================================================================
+   デザイントークン（Issue #19）
+
+   claude.ai/design の「Palworldサーバーダッシュボード」から取り込んだ配色。
+   紺を土台に、行動を促す色だけを絞って使う。
+   ========================================================================== */
 :root {
-  --bg: #12141a; --panel: #1a1d26; --panel2: #222634; --line: #2e3342;
-  --fg: #e6e9f0; --muted: #97a0b5; --accent: #4da3ff; --ok: #3bbf7d;
-  --warn: #e8a33d; --crit: #ef5350; --radius: 10px;
+  --bg: #0a1420;          /* 画面の地 */
+  --panel: #0d1b2a;       /* サイドバー・上部バー */
+  --card: #0f2436;        /* カード・パネル */
+  --sunken: #0a1928;      /* 入力欄・カード内のくぼみ */
+  --ink: #08111c;         /* ログのような「奥」の面 */
+
+  --line: #16293c;        /* 仕切り線 */
+  --line2: #1a3550;       /* カードの縁 */
+  --line3: #23415c;       /* 入力欄の縁 */
+
+  --fg: #e9f1f7;
+  --fg2: #cfe2f0;
+  --muted: #8fabc4;
+  --muted2: #6f8ea8;
+
+  --accent: #4cc2ff;
+  --accent-ink: #06253a;  /* アクセント面に乗せる文字 */
+  --accent-dim: #12354f;  /* タグの下地 */
+  --accent-deep: #1c4f74; /* 選択中のピル */
+
+  --ok: #7ee7b4;
+  --ok-dim: #12352a;
+  --warn: #ffc44d;
+  --warn-dim: #3a2c12;
+  --crit: #ff8fa3;
+  --crit-line: #5b3040;
+  --crit-dim: #2a1620;
+
+  --radius: 18px;         /* カード */
+  --radius-sm: 12px;      /* ボタン・入力欄 */
+  --radius-xs: 10px;      /* カード内の小さな面 */
+
+  --mono: 'JetBrains Mono', ui-monospace, "SF Mono", Menlo, monospace;
 }
+
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);
-  font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
-  font-size: 14px; line-height: 1.6;
+  font-family: 'Zen Maru Gothic', system-ui, -apple-system,
+               "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  font-size: 14px; font-weight: 500; line-height: 1.7;
   /* iOS は横向きにすると本文を勝手に拡大する。表の桁が崩れるので止める */
   -webkit-text-size-adjust: 100%;
 }
@@ -23,175 +62,400 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* --- サイドバー --- */
 .sidebar {
-  width: 220px; flex: 0 0 220px; background: var(--panel);
-  border-right: 1px solid var(--line); padding: 16px 12px; display: flex; flex-direction: column; gap: 4px;
+  width: 224px; flex: 0 0 224px; background: var(--panel);
+  border-right: 1px solid var(--line); padding: 24px 14px;
+  display: flex; flex-direction: column; gap: 4px;
 }
-.brand { font-weight: 700; font-size: 15px; padding: 4px 8px 12px; display: flex; align-items: center; gap: 8px; }
-.badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--panel2); color: var(--muted); }
+.brand {
+  font-size: 16px; font-weight: 900; color: #fff;
+  padding: 0 8px 4px; display: flex; flex-direction: column;
+  align-items: flex-start; gap: 10px;
+}
+.badge {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+  padding: 4px 9px; border-radius: 999px;
+  background: var(--accent-dim); color: #67c7f5;
+}
 .badge.production { background: #40202a; color: #ff8f8f; }
+.navgroup { display: flex; flex-direction: column; gap: 4px; margin-top: 22px; }
+.navsep { height: 1px; background: var(--line); margin: 10px 14px; }
 .navbtn {
-  background: none; border: 0; text-align: left; padding: 9px 12px;
-  border-radius: var(--radius); cursor: pointer; color: var(--muted);
+  background: none; border: 0; text-align: left; padding: 11px 14px;
+  border-radius: var(--radius-sm); cursor: pointer; color: var(--muted);
+  font-size: 14px; font-weight: 500;
 }
-.navbtn:hover { background: var(--panel2); color: var(--fg); }
-.navbtn.active { background: var(--accent); color: #08131f; font-weight: 600; }
+.navbtn:hover { background: var(--card); color: var(--fg); }
+.navbtn.active {
+  background: linear-gradient(90deg, var(--accent-deep), #143b58);
+  color: #fff; font-weight: 700; box-shadow: 0 2px 10px rgba(28,79,116,.5);
+}
 .sidebar .spacer { flex: 1; }
-.statusdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
-.statusdot.online { background: var(--ok); }
-.statusdot.offline { background: var(--crit); }
-
-/* --- メイン --- */
-/* 横向きの iPhone はノッチ側に安全余白が要る（viewport-fit=cover のため） */
-.main {
-  flex: 1; min-width: 0;
-  padding: 20px 24px 60px;
-  padding-top: max(20px, env(safe-area-inset-top));
-  padding-left: max(24px, env(safe-area-inset-left));
-  padding-right: max(24px, env(safe-area-inset-right));
+.sidefoot {
+  margin-top: auto; padding: 14px; border-radius: 14px; background: var(--card);
+  display: flex; flex-direction: column; gap: 8px;
 }
-.topbar { display: none; align-items: center; gap: 12px; margin-bottom: 12px; }
-.hamburger { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
-h1 { font-size: 19px; margin: 0 0 16px; }
-h2 { font-size: 15px; margin: 24px 0 10px; color: var(--muted); font-weight: 600; }
+.sidefoot .who { font-size: 12px; color: var(--muted); }
+.sidefoot .act {
+  font-size: 13px; font-weight: 700; cursor: pointer;
+  background: none; border: 0; padding: 0; text-align: left;
+}
+.sidefoot .act.out { color: #f2a25c; }
+.sidefoot .act.in { color: var(--accent); }
+.statusdot {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--muted2); flex: none;
+}
+.statusdot.online { background: #5ddba4; box-shadow: 0 0 12px rgba(93,219,164,.7); }
+.statusdot.offline { background: var(--crit); box-shadow: 0 0 12px rgba(255,143,163,.5); }
 
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+/* --- 上部バー（常時表示。サーバの状態と主要操作） --- */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.topbar {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  padding: 16px 30px; background: var(--panel); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 5;
+  padding-top: max(16px, env(safe-area-inset-top));
+  padding-left: max(30px, env(safe-area-inset-left));
+  padding-right: max(30px, env(safe-area-inset-right));
+}
+.topbar .servername { display: flex; align-items: center; gap: 11px; font-size: 16px; font-weight: 700; }
+.topbar .facts {
+  display: flex; align-items: center; gap: 14px;
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+}
+.topbar .facts .sep { color: #2b4a66; }
+.topbar .actions { margin-left: auto; display: flex; gap: 10px; flex-wrap: wrap; }
+.hamburger {
+  display: none; background: var(--card); border: 1px solid var(--line3);
+  border-radius: var(--radius-sm); padding: 8px 12px; cursor: pointer;
+}
+.view {
+  padding: 28px 30px 60px;
+  padding-left: max(30px, env(safe-area-inset-left));
+  padding-right: max(30px, env(safe-area-inset-right));
+}
+
+h1 { font-size: 24px; font-weight: 900; margin: 0; }
+h2 { font-size: 15px; font-weight: 700; margin: 26px 0 12px; color: var(--fg); }
+.pagehead { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+.pagehead .lead { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.pagehead .lead.mono { font-family: var(--mono); font-size: 12px; }
+.pagehead .right { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* --- カード --- */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; }
+.card {
+  background: var(--card); border: 1px solid var(--line2);
+  border-radius: var(--radius); padding: 18px;
+}
 .card .label { color: var(--muted); font-size: 12px; }
-.card .value { font-size: 26px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
-.card .sub { color: var(--muted); font-size: 12px; }
+.card .value {
+  font-family: var(--mono); font-size: 26px; font-weight: 700;
+  margin-top: 6px; font-variant-numeric: tabular-nums;
+}
+.card .sub { color: var(--muted2); font-size: 12px; }
 .value.warn { color: var(--warn); } .value.crit { color: var(--crit); } .value.ok { color: var(--ok); }
+.panel {
+  background: var(--card); border: 1px solid var(--line2);
+  border-radius: var(--radius); padding: 22px;
+}
 
+/* --- 表 --- */
 table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
-th { color: var(--muted); font-weight: 600; font-size: 12px; }
-tbody tr:hover { background: var(--panel2); }
-.tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; }
+th, td { text-align: left; padding: 14px 16px; border-bottom: 1px solid #142a3d; }
+th {
+  color: var(--muted2); font-weight: 500; font-size: 11px;
+  font-family: var(--mono); border-bottom: 1px solid var(--line);
+}
+td { font-size: 13px; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: rgba(23,51,75,.45); }
+.tablewrap {
+  background: var(--card); border: 1px solid var(--line2);
+  border-radius: var(--radius); overflow-x: auto;
+}
+.mono { font-family: var(--mono); }
 
+/* --- ボタン --- */
 button.btn {
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
-  padding: 7px 14px; cursor: pointer;
+  font-size: 13px; font-weight: 700; padding: 10px 18px;
+  border-radius: var(--radius-sm); border: 1px solid var(--line3);
+  background: #12293d; color: var(--fg2); cursor: pointer; white-space: nowrap;
 }
-button.btn:hover { border-color: var(--accent); }
-button.btn.primary { background: var(--accent); color: #08131f; border-color: var(--accent); font-weight: 600; }
-button.btn.danger { border-color: #5a2a2a; color: #ff9d9d; }
-button.btn.danger:hover { background: #3a1f1f; }
-button.btn.solid-danger { background: var(--crit); border-color: var(--crit); color: #2a0d0d; font-weight: 600; }
-button.btn.solid-danger:hover { background: #ff6b68; }
+button.btn:hover { border-color: var(--accent); color: #fff; }
+button.btn.primary {
+  background: var(--accent); color: var(--accent-ink); border-color: var(--accent);
+  box-shadow: 0 3px 12px rgba(76,194,255,.3);
+}
+button.btn.primary:hover { background: #6ccdff; }
+button.btn.danger { border-color: var(--crit-line); background: var(--crit-dim); color: var(--crit); }
+button.btn.danger:hover { background: #3a1f28; border-color: var(--crit); }
+button.btn.solid-danger {
+  background: #e5566e; border-color: #e5566e; color: #2a0d0d; box-shadow: none;
+}
+button.btn.solid-danger:hover { background: #ff6b83; }
+button.btn.small { font-size: 12px; padding: 8px 14px; border-radius: var(--radius-xs); }
+button.btn.ghost { background: transparent; }
 button.btn:disabled { opacity: .45; cursor: not-allowed; }
-.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-input[type=text], input[type=number], input[type=date], input[type=time], select, textarea {
-  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+button.btn:disabled:hover { border-color: var(--line3); color: var(--fg2); }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+/* --- 入力欄 --- */
+input[type=text], input[type=number], input[type=date], input[type=time],
+input[type=password], select, textarea {
+  background: var(--sunken); border: 1px solid var(--line3);
+  border-radius: var(--radius-sm); padding: 11px 14px; color: var(--fg);
 }
-textarea { width: 100%; min-height: 320px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; white-space: pre; }
+input:focus, select:focus, textarea:focus { outline: 2px solid rgba(76,194,255,.45); outline-offset: -1px; }
+input::placeholder { color: #5f7d97; }
+textarea {
+  width: 100%; min-height: 320px; font-family: var(--mono);
+  font-size: 12.5px; line-height: 1.9; white-space: pre; background: var(--sunken);
+}
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
 
 /* --- モーダル --- */
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,.62); z-index: 100;
+  position: fixed; inset: 0; background: rgba(4,10,18,.72); z-index: 100;
   display: flex; align-items: center; justify-content: center; padding: 20px;
+  backdrop-filter: blur(3px);
 }
 .modal {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-  width: 100%; max-width: 520px; display: flex; flex-direction: column;
-  box-shadow: 0 24px 60px rgba(0,0,0,.5);
-  /* dvh はアドレスバーの伸縮を含んだ高さ。vh だとモバイルで下がはみ出す */
+  background: var(--card); border: 1px solid var(--line2); border-radius: var(--radius);
+  width: 100%; max-width: 540px; display: flex; flex-direction: column;
+  box-shadow: 0 24px 60px rgba(0,0,0,.55);
   max-height: 88vh; max-height: 88dvh;
 }
-.modal-head { padding: 18px 20px 10px; border-bottom: 1px solid var(--line); }
-.modal-head h3 { margin: 0; font-size: 16px; }
+.modal-head { padding: 20px 22px 12px; border-bottom: 1px solid var(--line); }
+.modal-head h3 { margin: 0; font-size: 17px; font-weight: 900; }
 .modal-head .lead { color: var(--muted); font-size: 13px; margin-top: 6px; }
-.modal-body { padding: 16px 20px; overflow-y: auto; }
-.modal-foot { padding: 12px 20px 18px; display: flex; gap: 8px; justify-content: flex-end; border-top: 1px solid var(--line); }
-.modal .field { margin-bottom: 14px; }
-.modal .field > label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+.modal-body { padding: 18px 22px; overflow-y: auto; }
+.modal-foot {
+  padding: 14px 22px 20px; display: flex; gap: 10px;
+  justify-content: flex-end; border-top: 1px solid var(--line);
+}
+.modal .field { margin-bottom: 16px; }
+.modal .field > label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .modal .field input[type=text], .modal .field select { width: 100%; }
-.modal .error { color: #ff9d9d; font-size: 12.5px; min-height: 1.2em; }
-/* モーダル内外どちらでも使う（サーバ操作パネルの進行中表示にも） */
-.warnbox { background: #3a1c1c; border: 1px solid #6d2f2f; border-radius: 8px; padding: 10px 12px; font-size: 13px; }
-.infobox { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 13px; }
-.modal .warnbox, .modal .infobox { margin-bottom: 14px; }
+.modal .error { color: var(--crit); font-size: 12.5px; min-height: 1.2em; }
+.warnbox {
+  background: linear-gradient(135deg, #2c2412, #1a2333);
+  border: 1px solid #4a3a1a; border-radius: var(--radius-sm);
+  padding: 14px 16px; font-size: 13px; color: #ffd98a;
+}
+.infobox {
+  background: var(--sunken); border: 1px solid var(--line3);
+  border-radius: var(--radius-sm); padding: 14px 16px; font-size: 13px;
+}
+.modal .warnbox, .modal .infobox { margin-bottom: 16px; }
+.warnbox.small { font-size: 12px; padding: 10px 12px; }
 
 /* --- ゲーム設定フォーム --- */
-.catbar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.catbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .catbtn {
-  border: 1px solid var(--line); background: var(--panel); border-radius: 99px;
-  padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--muted);
+  border: 1px solid var(--line3); background: #12293d; border-radius: 999px;
+  padding: 9px 16px; cursor: pointer; font-size: 13px; font-weight: 700; color: var(--muted);
 }
 .catbtn:hover { color: var(--fg); }
-.catbtn.on { background: var(--accent); border-color: var(--accent); color: #08131f; font-weight: 600; }
-.catbtn .count { opacity: .7; margin-left: 6px; font-size: 11px; }
+.catbtn.on { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
+.catbtn .count { opacity: .75; margin-left: 6px; font-family: var(--mono); font-size: 11px; }
 
-.fieldgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+.fieldgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
 .setting {
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+  background: var(--card); border: 1px solid var(--line2); border-radius: var(--radius);
+  padding: 20px; display: flex; flex-direction: column; gap: 8px;
 }
-.setting.changed { border-color: var(--accent); background: #1b2430; }
-.setting .head { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
-/* 項目名は長いものだと30文字を超える。折り返せないとカードからはみ出す */
+.setting.changed { border-color: #2f5a7d; box-shadow: 0 0 0 1px rgba(76,194,255,.18); }
+.setting .head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
 .setting .head > div { min-width: 0; }
+.setting .title { font-size: 14px; font-weight: 700; }
 .setting .name {
-  font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, monospace;
+  font-family: var(--mono); font-size: 11px; color: var(--muted2);
   overflow-wrap: anywhere;
 }
-.setting .title { font-weight: 600; }
-.setting .help { font-size: 12px; color: var(--muted); }
+.setting .help { font-size: 12px; color: var(--muted); line-height: 1.8; }
 .setting input, .setting select { width: 100%; }
-.setting .ctl { display: flex; gap: 6px; align-items: center; }
+.setting .ctl { display: flex; gap: 8px; align-items: center; }
 .setting .ctl button { flex: 0 0 auto; }
-.tag-unknown { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: #3a3018; color: var(--warn); }
-.tag-changed { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: var(--accent); color: #08131f; }
-.tag-added { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: var(--ok); color: #06180f; }
-.tag-locked { font-size: 10px; padding: 1px 7px; border-radius: 99px; background: var(--panel2); color: var(--crit); border: 1px solid #5a2a2a; }
-.warnbox.small { font-size: 12px; padding: 8px 10px; }
 .setting.muted-card { border-style: dashed; opacity: .85; }
 .setting.muted-card .title { font-weight: 500; }
+.tag-unknown, .tag-changed, .tag-added, .tag-locked {
+  font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; white-space: nowrap;
+}
+.tag-unknown { background: var(--warn-dim); color: var(--warn); }
+.tag-changed { background: var(--accent-dim); color: #7fd1ff; }
+.tag-added { background: var(--ok-dim); color: var(--ok); }
+.tag-locked { background: var(--crit-dim); color: var(--crit); border: 1px solid var(--crit-line); }
 
 .savebar {
-  position: sticky; bottom: 0; margin-top: 16px; z-index: 10;
-  background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 10px 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-  box-shadow: 0 -6px 20px rgba(0,0,0,.35);
+  position: sticky; bottom: 0; margin-top: 18px; z-index: 10;
+  background: rgba(13,27,42,.94); border: 1px solid var(--line3);
+  border-radius: var(--radius); padding: 16px 20px;
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  box-shadow: 0 -6px 24px rgba(0,0,0,.45); backdrop-filter: blur(8px);
 }
-.difflist { max-height: 40vh; overflow-y: auto; }
+.difflist { max-height: 40vh; max-height: 40dvh; overflow-y: auto; }
 .difflist .row2 {
-  display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center;
-  padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px;
+  display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center;
+  padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px;
 }
-.difflist .before { color: var(--muted); text-decoration: line-through; }
-.difflist .after { color: var(--ok); font-weight: 600; }
+.difflist .before { color: var(--muted2); text-decoration: line-through; }
+.difflist .after { color: var(--ok); font-weight: 700; }
 
-.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
-  border: 1px solid var(--line); background: var(--panel2); border-radius: 99px;
-  padding: 5px 12px; cursor: pointer; font-size: 13px; user-select: none;
+  border: 1px solid var(--line3); background: #12293d; border-radius: 999px;
+  padding: 8px 15px; cursor: pointer; font-size: 13px; font-weight: 700;
+  color: var(--muted); user-select: none;
 }
-.chip.on { background: var(--accent); border-color: var(--accent); color: #08131f; font-weight: 600; }
+.chip.on { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
 
+/* --- プレイヤーカード --- */
+.pcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.pcard {
+  background: var(--card); border: 1px solid var(--line2); border-radius: var(--radius);
+  padding: 20px; display: flex; flex-direction: column; gap: 14px;
+}
+.pcard .who { display: flex; align-items: center; gap: 12px; }
+.avatar {
+  width: 42px; height: 42px; flex: none; border-radius: var(--radius-sm);
+  background: #17334b; display: flex; align-items: center; justify-content: center;
+  font-weight: 900; font-size: 16px; color: #7fd1ff;
+}
+.pcard .pname {
+  font-size: 15px; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pcard .pid { font-family: var(--mono); font-size: 11px; color: var(--muted2); }
+.tag-online {
+  margin-left: auto; font-size: 11px; font-weight: 700;
+  color: var(--ok); background: var(--ok-dim); border-radius: 6px; padding: 4px 8px;
+}
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.stat { background: var(--sunken); border-radius: var(--radius-xs); padding: 10px 12px; min-width: 0; }
+.stat .k { font-size: 10px; color: var(--muted2); margin-bottom: 4px; }
+.stat .v {
+  font-family: var(--mono); font-size: 16px; font-weight: 700;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+/* --- ダッシュボードの指標カード --- */
+.statcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+.statcard {
+  background: var(--card); border: 1px solid var(--line2);
+  border-radius: var(--radius); padding: 20px; min-width: 0;
+}
+.statcard .k { font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 8px; }
+.statcard .v {
+  font-family: var(--mono); font-size: 32px; font-weight: 700; color: #fff;
+  line-height: 1.2; font-variant-numeric: tabular-nums;
+}
+.statcard .v .unit { font-size: 18px; color: var(--muted2); }
+.statcard .foot { font-family: var(--mono); font-size: 11px; color: var(--muted2); margin-top: 8px; }
+.statcard .state { display: flex; align-items: center; gap: 10px; font-size: 22px; font-weight: 900; }
+/* スパークライン。値の読みは大きい数字に任せ、ここは形だけ見せる */
+.statcard svg.spark { width: 100%; height: 26px; margin-top: 14px; display: block; }
+/* 使用率のバー */
+.meter { height: 6px; border-radius: 4px; background: #1c3a55; margin-top: 14px; overflow: hidden; }
+.meter > i { display: block; height: 100%; border-radius: 4px; }
+/* 人数のセグメント。max に対する割合を段階で見せる */
+.segbar { display: flex; gap: 4px; margin-top: 14px; }
+.segbar > span { flex: 1; height: 5px; border-radius: 3px; background: #1c3a55; }
+.segbar > span.on { background: var(--accent); }
+
+/* --- ダッシュボードの2段組 --- */
+.dashgrid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 22px; align-items: start; margin-top: 22px; }
+.dashcol { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.cardhead { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.cardhead .t { font-size: 15px; font-weight: 700; }
+.cardhead .more {
+  margin-left: auto; font-size: 12px; font-weight: 700; color: var(--accent);
+  background: none; border: 0; cursor: pointer; padding: 0;
+}
+.counter { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted2); }
+.counter.over { color: var(--crit); }
+/* 送信先の表示。押せるものと押せないものを見た目で分ける */
+.targets { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 14px; font-size: 12px; }
+.target { display: flex; align-items: center; gap: 7px; color: var(--muted); }
+.target .lamp { width: 9px; height: 9px; border-radius: 50%; background: #1c3a55; }
+.target.on { color: var(--fg2); }
+.target.on .lamp { background: var(--ok); }
+.target.tap { cursor: pointer; }
+.targets .note { margin-left: auto; font-size: 12px; color: var(--muted2); }
+
+/* --- 直近のアクティビティ --- */
+.feed { display: flex; flex-direction: column; gap: 10px; font-family: var(--mono); font-size: 12px; }
+.feed .it { display: grid; grid-template-columns: 62px 56px 1fr; gap: 10px; align-items: baseline; }
+.feed .at { color: #5b7d99; }
+.feed .tag { font-weight: 700; font-size: 11px; }
+.feed .msg { color: #bcd3e5; overflow-wrap: anywhere; }
+
+/* --- 次回の予定 --- */
+.nextcard { background: linear-gradient(160deg, #153854, #102a3f); border-color: #21455f; }
+.nextcard .when { font-family: var(--mono); font-size: 22px; font-weight: 700; color: #fff; }
+.upcoming { display: flex; flex-direction: column; gap: 10px; font-size: 12px; }
+.upcoming .it { display: flex; align-items: center; gap: 10px; }
+.upcoming .at { font-family: var(--mono); color: var(--fg2); }
+.upcoming .rel { margin-left: auto; font-family: var(--mono); color: var(--muted2); }
+
+/* --- 入退室・タイムライン --- */
+.timeline { display: flex; flex-direction: column; gap: 12px; font-family: var(--mono); font-size: 12px; }
+.timeline .ev { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+.timeline .at { color: var(--muted2); }
+.timeline .kind { font-weight: 700; }
+.timeline .kind.join { color: var(--ok); }
+.timeline .kind.leave { color: var(--crit); }
+.timeline .subj { color: var(--fg2); }
+.timeline .note { color: var(--muted2); }
+
+/* --- 稼働履歴 --- */
+.charthead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.charthead .t { font-size: 15px; font-weight: 700; }
+.charthead .sub { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.charthead .now { margin-left: auto; font-family: var(--mono); font-size: 20px; font-weight: 700; }
+.chartgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+.axis {
+  display: flex; justify-content: space-between; margin-top: 8px;
+  font-family: var(--mono); font-size: 11px; color: var(--muted2);
+}
+
+/* --- ログ --- */
+#log {
+  background: var(--ink); border: 1px solid var(--line2); border-radius: var(--radius);
+  padding: 20px 22px; height: 60vh; height: 60dvh; overflow-y: auto;
+  font-family: var(--mono); font-size: 12.5px; line-height: 2.05;
+}
+#log .ln { display: grid; grid-template-columns: 82px 62px 1fr; gap: 14px; }
+#log .lt { color: #5b7d99; }
+#log .lv { font-weight: 700; }
+#log .lv.info { color: var(--muted); }
+#log .lv.warn { color: var(--warn); }
+#log .lv.error { color: var(--crit); }
+#log .lm { color: #bcd3e5; overflow-wrap: anywhere; white-space: pre-wrap; }
+#log .lm.app { color: #9fd0f0; }
+
+/* --- 通知・バナー --- */
 #toast {
-  position: fixed; z-index: 200; display: flex; flex-direction: column; gap: 8px;
+  position: fixed; z-index: 200; display: flex; flex-direction: column; gap: 10px;
   right: max(16px, env(safe-area-inset-right));
   bottom: calc(16px + env(safe-area-inset-bottom));
 }
-.toast { background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--accent);
-  padding: 10px 14px; border-radius: 8px; max-width: 340px; }
+.toast {
+  background: var(--card); border: 1px solid var(--line2); border-left: 3px solid var(--accent);
+  padding: 12px 16px; border-radius: var(--radius-sm); max-width: 340px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.45);
+}
 .toast.err { border-left-color: var(--crit); }
 .toast.ok { border-left-color: var(--ok); }
 
-#log { background: #0c0e13; border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 12px; height: 60vh; height: 60dvh; overflow-y: auto;
-  font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
-#log div { white-space: pre-wrap; word-break: break-all; }
-#log .app { color: var(--accent); }
-
-.banner { border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px; display: none; }
+.banner { border-radius: var(--radius-sm); padding: 14px 18px; margin-bottom: 18px; display: none; }
 .banner.show { display: block; }
-.banner.crit { background: #3a1c1c; border: 1px solid #6d2f2f; }
-.banner.warn { background: #3a3018; border: 1px solid #6d5a2f; }
+.banner.crit { background: var(--crit-dim); border: 1px solid var(--crit-line); color: #ffd6de; }
+.banner.warn { background: var(--warn-dim); border: 1px solid #6d5a2f; color: #ffe6b0; }
 
-canvas { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+canvas { width: 100%; background: var(--sunken); border: 1px solid var(--line2); border-radius: var(--radius-sm); }
 /* 描画は 900px 幅の座標系で行い、表示側は比率だけ保って伸縮させる。
    メディアクエリで上書きできるよう、インライン style ではなくここに置く */
 canvas.worldmap { aspect-ratio: 900 / 560; }
@@ -200,24 +464,23 @@ canvas.chart { aspect-ratio: 900 / 200; }
 /* --- ログイン画面 --- */
 .login-screen {
   display: none; position: fixed; inset: 0; z-index: 300; overflow-y: auto;
-  background: var(--bg); align-items: center; justify-content: center;
+  background: radial-gradient(1200px 600px at 50% -10%, #14304a, var(--bg));
+  align-items: center; justify-content: center;
   padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
            calc(20px + env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
 .login-screen.show { display: flex; }
 .login-card {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-  padding: 32px 30px; width: 100%; max-width: 380px;
-  box-shadow: 0 24px 60px rgba(0,0,0,.45);
+  background: var(--card); border: 1px solid var(--line2); border-radius: var(--radius);
+  padding: 34px 30px; width: 100%; max-width: 400px;
+  box-shadow: 0 24px 60px rgba(0,0,0,.55);
 }
-.login-brand { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
-.login-lead { color: var(--muted); font-size: 13px; margin: 0 0 22px; }
-.login-label {
-  display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px;
-}
+.login-brand { font-size: 20px; font-weight: 900; margin-bottom: 6px; }
+.login-lead { color: var(--muted); font-size: 13px; margin: 0 0 24px; line-height: 1.8; }
+.login-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 #login-username, #login-password { width: 100%; }
-.login-error { color: #ff9d9d; font-size: 12.5px; min-height: 1.4em; margin: 8px 0 4px; }
-.login-submit { width: 100%; margin-top: 6px; }
+.login-error { color: var(--crit); font-size: 12.5px; min-height: 1.4em; margin: 10px 0 4px; }
+.login-submit { width: 100%; margin-top: 8px; }
 
 .backdrop { display: none; }
 
@@ -235,12 +498,14 @@ canvas.chart { aspect-ratio: 900 / 200; }
 /* --- タブレット縦（iPad 768px など）: サイドバーは出したまま幅を詰める --- */
 @media (max-width: 900px) {
   .sidebar { width: 180px; flex-basis: 180px; }
-  .main { padding: 18px 18px 60px; }
+  .view { padding: 20px 18px 60px; }
+  .topbar { padding: 14px 18px; }
+  .dashgrid { grid-template-columns: 1fr; }
   /* 250px なら iPad mini 縦（本文 528px）でも2列に収まる */
-  .fieldgrid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+  .fieldgrid, .pcards { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+  .chartgrid { grid-template-columns: 1fr; }
 
-  /* 表は詰めずに横スクロールさせる。潰すと折り返して桁が読めなくなる。
-     iPad 縦（768px）はサイドバーを引いて 550px ほどしか残らないので、ここから効かせる */
+  /* 表は詰めずに横スクロールさせる。潰すと折り返して桁が読めなくなる */
   .tablewrap { -webkit-overflow-scrolling: touch; }
   .tablewrap table { min-width: 560px; }
 }
@@ -248,44 +513,50 @@ canvas.chart { aspect-ratio: 900 / 200; }
 /* --- 横幅が足りない: サイドバーを引き出しにする --- */
 @media (max-width: 700px) {
   .layout { display: block; }
-  .topbar { display: flex; }
-  .main { padding: 14px 14px 60px; }
+  .hamburger { display: block; }
+  .view { padding: 16px 14px 60px; }
+  .topbar { padding: 12px 14px; gap: 12px; }
+  .topbar .facts { width: 100%; order: 3; }
+  .topbar .actions { margin-left: auto; }
   .sidebar {
     position: fixed; inset: 0 auto 0 0; z-index: 40; transform: translateX(-100%);
     transition: transform .2s ease; width: 240px; flex-basis: auto;
-    padding-left: max(12px, env(safe-area-inset-left));
+    padding-left: max(14px, env(safe-area-inset-left));
     padding-bottom: calc(16px + env(safe-area-inset-bottom));
     overflow-y: auto;
   }
   .sidebar.open { transform: none; }
-  .backdrop.show { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 30; }
-  .cards { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+  .backdrop.show { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 30; }
+  .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .dashgrid { grid-template-columns: 1fr; gap: 16px; }
   .modal { max-height: 92vh; max-height: 92dvh; }
-
-  th, td { padding: 8px; }
+  th, td { padding: 11px 12px; }
 }
 
 /* --- スマートフォン --- */
 @media (max-width: 560px) {
-  h1 { font-size: 17px; }
-  .main { padding: 12px 12px 48px; }
-  .cards { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
-  .card { padding: 12px; }
+  h1 { font-size: 20px; }
+  .view { padding: 14px 12px 48px; }
+  .cards { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
+  .card { padding: 14px; }
   .card .value { font-size: 22px; }
 
   /* 2列だと1項目の幅が足りず、ラベルと入力欄が潰れる */
-  .fieldgrid { grid-template-columns: 1fr; }
+  .fieldgrid, .pcards { grid-template-columns: 1fr; }
+  .statcards { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .statcard { padding: 14px; }
+  .statcard .v { font-size: 24px; }
+  .feed .it { grid-template-columns: 54px 48px 1fr; gap: 8px; }
 
   /* 変更前 → 変更後 を横並びにすると各1/3幅になって読めない。縦に積む。
      矢印は縦並びだと意味を成さないので消す（打ち消し線と色で分かる） */
   .difflist .row2 { grid-template-columns: 1fr; gap: 2px; }
   .difflist .row2 > span { display: none; }
-  .difflist { max-height: 46vh; max-height: 46dvh; }
 
   /* モーダルは下から出すシート型にする。画面が狭いほど中央寄せは窮屈 */
   .modal-overlay { padding: 0; align-items: flex-end; }
-  .modal { max-width: none; border-radius: 14px 14px 0 0; max-height: 90vh; max-height: 90dvh; }
-  .modal-head { padding: 16px 16px 10px; }
+  .modal { max-width: none; border-radius: var(--radius) var(--radius) 0 0; max-height: 90vh; max-height: 90dvh; }
+  .modal-head { padding: 18px 16px 10px; }
   .modal-body { padding: 14px 16px; }
   .modal-foot {
     flex-direction: column-reverse; gap: 8px;
@@ -298,15 +569,17 @@ canvas.chart { aspect-ratio: 900 / 200; }
   .toast { max-width: none; }
 
   /* 2つのボタンで1行を分け合う。ホームインジケータに被らせない */
-  .savebar { padding: 10px; padding-bottom: calc(10px + env(safe-area-inset-bottom)); gap: 8px; }
+  .savebar { padding: 12px; padding-bottom: calc(12px + env(safe-area-inset-bottom)); gap: 8px; }
   .savebar > button.btn { flex: 1 1 0; }
 
-  .login-card { padding: 24px 20px; }
+  .login-card { padding: 26px 20px; }
   textarea { min-height: 240px; }
-  #log { height: 56vh; height: 56dvh; }
+  #log { height: 56vh; height: 56dvh; padding: 14px; }
+  #log .ln { grid-template-columns: 66px 52px 1fr; gap: 8px; font-size: 11.5px; }
 
   /* 横長すぎて潰れるので、スマートフォンでは縦に伸ばす */
   canvas.chart { aspect-ratio: 900 / 380; }
+  .stats { gap: 8px; }
 }
 
 /* --- 指で操作する端末 --- */
@@ -317,10 +590,10 @@ canvas.chart { aspect-ratio: 900 / 200; }
   input[type=text], input[type=number], input[type=date], input[type=time],
   input[type=password], select, textarea { font-size: 16px; }
 
-  button.btn { padding: 10px 16px; min-height: 44px; }
-  button.btn.small { min-height: 36px; padding: 7px 12px; }
-  .navbtn { padding: 12px; }
-  .catbtn, .chip { padding: 9px 16px; }
+  button.btn { padding: 12px 18px; min-height: 44px; }
+  button.btn.small { min-height: 38px; padding: 8px 14px; }
+  .navbtn { padding: 13px 14px; }
+  .catbtn, .chip { padding: 10px 16px; }
   .hamburger { min-height: 44px; min-width: 44px; }
 }
 </style>
@@ -330,12 +603,11 @@ canvas.chart { aspect-ratio: 900 / 200; }
   <nav class="sidebar" id="sidebar"></nav>
   <div class="backdrop" id="backdrop"></div>
   <main class="main">
-    <div class="topbar">
-      <button class="hamburger" id="hamburger" aria-label="メニュー">☰</button>
-      <strong>Palworld Server Manager</strong>
+    <div class="topbar" id="topbar"></div>
+    <div class="view">
+      <div class="banner" id="banner"></div>
+      <div id="view"></div>
     </div>
-    <div class="banner" id="banner"></div>
-    <div id="view"></div>
   </main>
 </div>
 <div id="toast"></div>
@@ -438,6 +710,16 @@ function fmtTime(iso) {
 }
 function fmtTs(ts) {
   return ts ? new Date(ts * 1000).toLocaleString("ja-JP", { hour12: false }) : "-";
+}
+function fmtClock(ts) {
+  return ts ? new Date(ts * 1000).toLocaleTimeString("ja-JP", { hour12: false, hour: "2-digit", minute: "2-digit" }) : "-";
+}
+function fmtBytes(n) {
+  if (n === null || n === undefined) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = Number(n), i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(1)) + " " + units[i];
 }
 // 秒数を「5分前」のような表示に
 function offsetLabel(sec) {
@@ -748,15 +1030,20 @@ const state = {
   view: "dashboard",
   config: null,
   status: null,
-  refresher: null,   // 各画面の定期更新タイマー
+  refresher: null,   // 各画面の主タイマー
+  timers: [],        // 同じ画面が持つ追加のタイマー（更新間隔が違うもの）
+  statusTimer: null, // 上部バー用。画面を切り替えても止めない
   ws: null,
 };
 
 function setView(id) {
   state.view = id;
   if (state.refresher) { clearInterval(state.refresher); state.refresher = null; }
+  for (const t of state.timers) clearInterval(t);
+  state.timers = [];
   if (state.ws) { state.ws.close(); state.ws = null; }
   buildSidebar();
+  buildTopbar();
   closeDrawer();
   const view = VIEWS.find(v => v.id === id) || VIEWS[0];
   const root = $("view");
@@ -764,47 +1051,119 @@ function setView(id) {
   view.render(root);
 }
 
+// 上段は「見る」画面、下段は「触る」画面。デザインの区切りに合わせている
+const NAV_TOP = ["dashboard", "players", "world", "history"];
+
 function buildSidebar() {
   const bar = $("sidebar");
   clear(bar);
   const env = state.config ? state.config.env : "";
   bar.appendChild(el("div", { class: "brand" }, [
-    "Palworld Manager",
+    el("div", { text: "Palworld Manager" }),
     env ? el("span", { class: "badge " + env, text: env }) : null,
   ]));
-  for (const v of VIEWS) {
-    bar.appendChild(el("button", {
-      class: "navbtn" + (v.id === state.view ? " active" : ""),
-      text: v.name,
-      onclick: () => setView(v.id),
-    }));
-  }
-  bar.appendChild(el("div", { class: "spacer" }));
-  if (state.config && state.config.auth_required) {
-    if (canOperate()) {
-      bar.appendChild(el("button", {
-        class: "navbtn", text: "ログアウト", style: "color:var(--crit)",
-        onclick: () => openModal({
-          title: "ログアウトします",
-          lead: "閲覧は続けられますが、再び操作するにはログインが必要になります。",
-          confirmLabel: "ログアウト",
-          onConfirm: logout,
-        }),
-      }));
-    } else {
-      bar.appendChild(el("div", { class: "muted", style: "padding:8px 12px;font-size:12px",
-        text: "閲覧のみ" }));
-      bar.appendChild(el("button", {
-        class: "navbtn", text: "ログイン", style: "color:var(--ok)",
-        onclick: () => showLogin(""),
+
+  const group = (ids) => {
+    const box = el("div", { class: "navgroup" });
+    for (const id of ids) {
+      const v = VIEWS.find(x => x.id === id);
+      if (!v) continue;
+      box.appendChild(el("button", {
+        class: "navbtn" + (v.id === state.view ? " active" : ""),
+        text: v.name,
+        onclick: () => setView(v.id),
       }));
     }
+    return box;
+  };
+  bar.appendChild(group(NAV_TOP));
+  bar.appendChild(el("div", { class: "navsep" }));
+  bar.appendChild(group(VIEWS.filter(v => !NAV_TOP.includes(v.id)).map(v => v.id)));
+
+  bar.appendChild(el("div", { class: "spacer" }));
+
+  if (state.config && state.config.auth_required) {
+    bar.appendChild(el("div", { class: "sidefoot" }, canOperate()
+      ? [
+          el("div", { class: "who", text: state.config.app_user || "ログイン中" }),
+          el("button", {
+            class: "act out", text: "ログアウト",
+            onclick: () => openModal({
+              title: "ログアウトします",
+              lead: "閲覧は続けられますが、再び操作するにはログインが必要になります。",
+              confirmLabel: "ログアウト",
+              onConfirm: logout,
+            }),
+          }),
+        ]
+      : [
+          el("div", { class: "who", text: "閲覧のみ" }),
+          el("button", { class: "act in", text: "ログイン", onclick: () => showLogin("") }),
+        ]));
   }
-  const online = state.status ? state.status.online : null;
-  bar.appendChild(el("div", { class: "muted", style: "padding:8px 12px;font-size:12px" }, [
+}
+
+// --------------------------------------------------------------------------
+// 上部バー（サーバの状態と主要操作。全画面で共通）
+// --------------------------------------------------------------------------
+function buildTopbar() {
+  const bar = $("topbar");
+  clear(bar);
+
+  const s = state.status;
+  const online = s ? s.online : null;
+  const cfg = state.config || {};
+
+  bar.appendChild(el("button", {
+    class: "hamburger", id: "hamburger", "aria-label": "メニュー", text: "☰",
+    onclick: openDrawer,
+  }));
+
+  bar.appendChild(el("div", { class: "servername" }, [
     el("span", { class: "statusdot " + (online === null ? "" : online ? "online" : "offline") }),
-    online === null ? "接続確認中" : online ? "サーバ稼働中" : "サーバ応答なし",
+    el("span", { text: (s && s.info && s.info.servername) || "Palworld Server" }),
   ]));
+
+  const facts = [];
+  if (s && s.metrics && s.metrics.uptime !== undefined && online) {
+    facts.push(el("span", { text: "稼働中 " + fmtDuration(s.metrics.uptime) }));
+  } else if (online === false) {
+    facts.push(el("span", { text: "応答なし" }));
+  }
+  if (cfg.pal_base_url) {
+    if (facts.length) facts.push(el("span", { class: "sep", text: "|" }));
+    facts.push(el("span", { text: cfg.pal_base_url.replace(/^https?:\/\//, "") }));
+  }
+  bar.appendChild(el("div", { class: "facts" }, facts));
+
+  // サーバ操作。停止中は「起動」だけを出す（落ちているサーバは止められない）
+  const actions = el("div", { class: "actions" });
+  const refresh = () => { buildTopbar(); };
+  if (online === false) {
+    actions.appendChild(gate(el("button", {
+      class: "btn primary", text: "起動",
+      onclick: () => openStartModal(refresh),
+    })));
+  } else {
+    actions.appendChild(gate(el("button", {
+      class: "btn", text: "ワールド保存",
+      onclick: () => openModal({
+        title: "ワールドを保存します",
+        lead: "サーバに保存を指示します。プレイヤーへの影響はありません。",
+        confirmLabel: "保存する",
+        async onConfirm() { await post("/api/save"); toast("ワールドを保存しました", "ok"); },
+      }),
+    })));
+    actions.appendChild(gate(el("button", {
+      class: "btn primary", text: "再起動",
+      onclick: () => openSequenceModal("restart", refresh),
+    })));
+    actions.appendChild(gate(el("button", {
+      class: "btn danger", text: "停止",
+      onclick: () => openSequenceModal("stop", refresh),
+    })));
+  }
+  bar.appendChild(actions);
 }
 
 function showBanner(text, kind) {
@@ -853,112 +1212,422 @@ function announcementTable(records) {
 // --------------------------------------------------------------------------
 // ダッシュボード（1秒ごとに自動更新）
 // --------------------------------------------------------------------------
-function card(label, value, sub, cls) {
-  return el("div", { class: "card" }, [
-    el("div", { class: "label", text: label }),
-    el("div", { class: "value " + (cls || ""), text: value }),
-    sub ? el("div", { class: "sub", text: sub }) : null,
+
+/** 折れ線を SVG で描く。カード内の小さな傾向表示用。
+ *
+ *  値の読み取りは隣の大きな数字に任せ、ここでは形だけ見せる。
+ *  そのため軸も目盛りも置かない。
+ */
+function sparkline(values, color) {
+  const W = 120, H = 26;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "spark");
+
+  const nums = values.filter(v => typeof v === "number");
+  if (nums.length < 2) return svg;
+
+  const min = Math.min.apply(null, nums);
+  const max = Math.max.apply(null, nums);
+  // 平坦な系列でも真ん中に線が出るようにする（0除算よけも兼ねる）
+  const span = (max - min) || 1;
+  const pad = 3;
+  const pts = nums.map((v, i) => {
+    const x = (i / (nums.length - 1)) * W;
+    const y = H - pad - ((v - min) / span) * (H - pad * 2);
+    return x.toFixed(1) + "," + y.toFixed(1);
+  }).join(" ");
+
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  line.setAttribute("points", pts);
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", color);
+  line.setAttribute("stroke-width", "2");
+  line.setAttribute("vector-effect", "non-scaling-stroke");
+  svg.appendChild(line);
+  return svg;
+}
+
+function statcard(label, valueNode, footText, extraNode) {
+  return el("div", { class: "statcard" }, [
+    el("div", { class: "k", text: label }),
+    valueNode,
+    extraNode || null,
+    footText ? el("div", { class: "foot", text: footText }) : null,
+  ]);
+}
+
+function bigValue(value, unit, color) {
+  return el("div", { class: "v", style: color ? "color:" + color : "" }, [
+    String(value),
+    unit ? el("span", { class: "unit", text: unit }) : null,
   ]);
 }
 
 function renderDashboard(root) {
-  const cards = el("div", { class: "cards" });
-  const restartBox = el("div", { class: "panel", style: "margin-top:16px" });
+  const cards = el("div", { class: "statcards" });
+  const restartBox = el("div");
+  const announceBox = el("div");
   const historyBox = el("div");
+  const nextBox = el("div");
+  const feedBox = el("div");
 
-  root.appendChild(el("h1", { text: "ダッシュボード" }));
+  root.appendChild(el("div", { class: "pagehead" }, [
+    el("div", null, [
+      el("h1", { text: "ダッシュボード" }),
+      el("div", { class: "lead", text: "サーバの状態と直近の動きをまとめて表示します。" }),
+    ]),
+  ]));
   root.appendChild(cards);
+  root.appendChild(restartBox);
+  root.appendChild(el("div", { class: "dashgrid" }, [
+    el("div", { class: "dashcol" }, [announceBox, historyBox]),
+    el("div", { class: "dashcol" }, [nextBox, feedBox]),
+  ]));
 
   // --- アナウンス送信 ---
-  const announceInput = el("input", { type: "text", placeholder: "全体アナウンス", style: "flex:1;min-width:200px" });
-  const toDiscord = el("input", { type: "checkbox" });
+  const MAX_LEN = 500;   // サーバ側の上限に合わせる
+  const announceInput = el("input", {
+    type: "text", placeholder: "全体に流すメッセージ…", style: "flex:1;min-width:180px",
+  });
+  const counter = el("span", { class: "counter", text: "0 / " + MAX_LEN });
+  let toDiscord = false;
+
+  announceInput.addEventListener("input", () => {
+    const n = [...announceInput.value].length;
+    counter.textContent = n + " / " + MAX_LEN;
+    counter.className = "counter" + (n > MAX_LEN ? " over" : "");
+  });
 
   async function sendAnnounce() {
     const message = announceInput.value.trim();
     if (!message) return;
     try {
-      await post("/api/announce", { message, to_discord: toDiscord.checked });
+      await post("/api/announce", { message, to_discord: toDiscord });
       announceInput.value = "";
+      announceInput.dispatchEvent(new Event("input"));
       toast("アナウンスを送信しました", "ok");
       loadHistory();
+      loadFeed();
     } catch (e) { toast(e.message, "err"); }
   }
   announceInput.addEventListener("keydown", (ev) => { if (ev.key === "Enter") sendAnnounce(); });
 
-  root.appendChild(el("h2", { text: "アナウンス" }));
-  root.appendChild(el("div", { class: "panel" }, [
-    readOnlyNote("アナウンスの送信にはログインが必要です。履歴の閲覧はできます。"),
-    el("div", { class: "row" }, [
-      gate(announceInput),
-      gate(el("button", { class: "btn primary", text: "送信", onclick: sendAnnounce })),
-    ]),
-    el("label", { class: "row muted small", style: "margin-top:8px" },
-      [gate(toDiscord), "Discord にも同じ内容を流す"]),
-  ]));
+  function paintAnnounce() {
+    const cfg = state.config || {};
+    const hasWebhook = !!cfg.discord_webhook_url;
 
-  // サーバ操作のボタンは「サーバ設定」タブに集約している。
-  // ここに出すのは進行中シーケンスの状況だけ。
-  root.appendChild(restartBox);
+    const discordChip = el("span", {
+      class: "target tap" + (toDiscord ? " on" : ""),
+      title: hasWebhook ? "クリックで切り替え" : "DISCORD_WEBHOOK_URL が未設定です",
+      onclick: () => {
+        if (!hasWebhook) { toast("Discord の Webhook が設定されていません", "err"); return; }
+        toDiscord = !toDiscord;
+        paintAnnounce();
+      },
+    }, [el("span", { class: "lamp" }), "Discord"]);
 
-  root.appendChild(el("h2", { text: "アナウンス履歴" }));
-  root.appendChild(historyBox);
-
-  async function loadHistory() {
-    try {
-      const data = await api("/api/announcements?limit=30");
-      clear(historyBox);
-      historyBox.appendChild(announcementTable(data.records));
-    } catch (e) { /* ダッシュボードの主要表示は止めない */ }
+    clear(announceBox);
+    announceBox.appendChild(el("div", { class: "panel" }, [
+      el("div", { class: "cardhead" }, [el("div", { class: "t", text: "アナウンス" }), counter]),
+      readOnlyNote("アナウンスの送信にはログインが必要です。履歴の閲覧はできます。"),
+      el("div", { class: "row", style: "flex-wrap:nowrap" }, [
+        gate(announceInput),
+        gate(el("button", { class: "btn primary", text: "送信", onclick: sendAnnounce })),
+      ]),
+      el("div", { class: "targets" }, [
+        // ゲーム内は常に送る。切り替えられないので押せる見た目にしない
+        el("span", { class: "target on" }, [el("span", { class: "lamp" }), "ゲーム内"]),
+        hasWebhook ? discordChip
+                   : el("span", { class: "target", title: "DISCORD_WEBHOOK_URL が未設定です" },
+                        [el("span", { class: "lamp" }), "Discord（未設定）"]),
+        el("span", { class: "note", text: announceNote }),
+      ]),
+    ]));
   }
 
-  function paint(s) {
-    clear(cards);
-    const m = s.metrics || {}, h = s.host || {};
-    const memCls = h.mem_percent >= 90 ? "crit" : h.mem_percent >= 80 ? "warn" : "";
-    cards.appendChild(card("状態", s.online ? "稼働中" : "応答なし", s.error || "", s.online ? "ok" : "crit"));
-    cards.appendChild(card("サーバFPS", m.serverfps !== undefined ? m.serverfps : "-",
-      m.serverframetime !== undefined ? "フレーム時間 " + m.serverframetime + "ms" : ""));
-    cards.appendChild(card("プレイヤー",
-      (m.currentplayernum !== undefined ? m.currentplayernum : "-") + " / " + (m.maxplayernum !== undefined ? m.maxplayernum : "-")));
-    cards.appendChild(card("稼働時間", fmtDuration(m.uptime)));
-    cards.appendChild(card("CPU使用率", (h.cpu_percent !== undefined ? h.cpu_percent.toFixed(1) : "-") + "%"));
-    cards.appendChild(card("メモリ使用率", (h.mem_percent !== undefined ? h.mem_percent.toFixed(1) : "-") + "%",
-      h.mem_used_mb + "MB / " + h.mem_total_mb + "MB", memCls));
+  // 直近の Discord 送信の結果。連携が生きているかの手掛かりにする
+  let announceNote = "";
 
+  // --- アナウンス履歴 ---
+  let historyLimit = 5;
+  async function loadHistory() {
+    let data;
+    try { data = await api("/api/announcements?limit=30"); }
+    catch (e) { return; }
+
+    const records = data.records;
+    const lastDiscord = records.find(r => r.to_discord);
+    announceNote = !(state.config && state.config.discord_webhook_url)
+      ? "Discord は未設定です"
+      : lastDiscord
+        ? (lastDiscord.ok ? "Discord 連携は正常（最終送信 " + fmtClock(lastDiscord.ts) + "）"
+                          : "直近の Discord 送信に失敗しています")
+        : "Discord へはまだ送信していません";
+    paintAnnounce();
+
+    clear(historyBox);
+    const head = el("div", { class: "cardhead" }, [
+      el("div", { class: "t", text: "アナウンス履歴" }),
+      records.length > 5 ? el("button", {
+        class: "more", text: historyLimit === 5 ? "すべて表示" : "折りたたむ",
+        onclick: () => { historyLimit = historyLimit === 5 ? 30 : 5; loadHistory(); },
+      }) : null,
+    ]);
+    historyBox.appendChild(el("div", { class: "panel", style: "padding:22px 0 0" }, [
+      el("div", { style: "padding:0 22px" }, head),
+      records.length
+        ? announcementTable(records.slice(0, historyLimit))
+        : el("div", { class: "muted", style: "padding:0 22px 22px", text: "アナウンス履歴はまだありません" }),
+    ]));
+  }
+
+  // --- 次回の予定 ---
+  async function loadNext() {
+    let data;
+    try { data = await api("/api/schedules"); }
+    catch (e) { return; }
+
+    const active = data.schedules.filter(s => s.enabled && s.next_action_at);
+    clear(nextBox);
+
+    if (!active.length) {
+      nextBox.appendChild(el("div", { class: "panel" }, [
+        el("div", { class: "cardhead" }, [
+          el("div", { class: "t", text: "次回の予定" }),
+          el("button", { class: "more", text: "スケジュール", onclick: () => setView("schedules") }),
+        ]),
+        el("div", { class: "muted small", text: "有効な予約はありません" }),
+      ]));
+      return;
+    }
+
+    const next = active[0];
+    const remain = Math.max(0, (new Date(next.next_action_at).getTime() - Date.now()) / 1000);
+    const rest = active.slice(1, 4);
+
+    nextBox.appendChild(el("div", { class: "panel nextcard" }, [
+      el("div", { class: "cardhead" }, [
+        el("div", { class: "t", text: "次回の予定" }),
+        el("button", { class: "more", text: "スケジュール", onclick: () => setView("schedules") }),
+      ]),
+      el("div", { class: "row", style: "gap:8px;margin-bottom:10px" }, [
+        el("span", { class: "tag-changed", text: next.action_label }),
+        el("span", { class: "tag-added", style: "background:#17334b;color:#9dbdd6",
+          text: { daily: "毎日", once: "単発", cron: "cron" }[next.kind] || next.kind }),
+        next.skip_next ? el("span", { class: "tag-unknown", text: "今回は見送り" }) : null,
+      ]),
+      el("div", { class: "when", text: fmtTime(next.next_action_at) }),
+      el("div", { class: "mono small muted", style: "margin-top:8px",
+        text: next.skip_next ? "この回は実行されません" : "あと " + fmtDuration(remain) }),
+      el("div", { class: "small muted", style: "margin-top:12px" }, [
+        next.announced && next.notice_offsets && next.notice_offsets.length
+          ? "予告 " + next.notice_offsets.map(offsetLabel).join(" / ") : "予告なし",
+        next.pending_changes ? " ・ 設定変更 " + next.pending_changes + " 件を同時反映" : null,
+      ]),
+      el("div", { class: "row", style: "margin-top:16px" }, [
+        gate(el("button", {
+          class: "btn small", text: "編集", style: "flex:1",
+          onclick: () => setView("schedules"),
+        })),
+        gate(el("button", {
+          class: "btn small", text: next.skip_next ? "見送りをやめる" : "今回はスキップ",
+          style: "flex:1",
+          onclick: async () => {
+            try {
+              await patch("/api/schedules/" + next.id, { skip_next: !next.skip_next });
+              toast(next.skip_next ? "見送りを取り消しました" : "次の1回だけ見送ります", "ok");
+              loadNext();
+            } catch (e) { toast(e.message, "err"); }
+          },
+        })),
+      ]),
+      rest.length ? el("div", { style: "border-top:1px solid var(--line);margin:18px 0 14px" }) : null,
+      rest.length ? el("div", { class: "small muted", style: "margin-bottom:10px", text: "そのあとの予定" }) : null,
+      rest.length ? el("div", { class: "upcoming" }, rest.map(s => el("div", { class: "it" }, [
+        el("span", { class: "tag-added", style: "background:#17334b;color:#9dbdd6", text: s.action_label }),
+        el("span", { class: "at", text: fmtTime(s.next_action_at).replace(/^\d{4}\//, "") }),
+        el("span", { class: "rel",
+          text: fmtDuration(Math.max(0, (new Date(s.next_action_at).getTime() - Date.now()) / 1000)) + "後" }),
+      ]))) : null,
+    ]));
+  }
+
+  // --- 直近のアクティビティ ---
+  /** 入退室・アナウンス・ログを1本の時系列にまとめる。
+   *
+   *  それぞれ別の画面に散っているものを、起きた順に並べ直すだけ。
+   *  専用の API は作らず、既にあるものを混ぜている。
+   */
+  async function loadFeed() {
+    let events = [], announces = [], logs = [];
+    try {
+      const [e, a, l] = await Promise.all([
+        api("/api/players/events?limit=10"),
+        api("/api/announcements?limit=10"),
+        api("/api/logs"),
+      ]);
+      events = e.events; announces = a.records; logs = l.lines;
+    } catch (err) { return; }
+
+    const items = [];
+    for (const e of events) {
+      items.push({
+        ts: e.ts,
+        tag: e.kind === "join" ? "JOIN" : "LEFT",
+        color: e.kind === "join" ? "var(--ok)" : "var(--crit)",
+        msg: e.name + (e.kind === "join" ? " が参加しました" : " が退出しました"),
+      });
+    }
+    for (const a of announces) {
+      const to = [a.to_game ? "ゲーム内" : null, a.to_discord ? "Discord" : null].filter(Boolean).join(" / ");
+      items.push({
+        ts: a.ts,
+        tag: a.ok ? "SEND" : "FAIL",
+        color: a.ok ? "#7fd1ff" : "var(--crit)",
+        msg: "アナウンス「" + a.message + "」" + (to ? " " + to : ""),
+      });
+    }
+    for (const l of logs.slice(-20)) {
+      items.push({
+        ts: l.ts,
+        tag: (l.level || "info").toUpperCase(),
+        color: l.level === "error" ? "var(--crit)" : l.level === "warn" ? "var(--warn)" : "var(--muted)",
+        msg: l.line,
+      });
+    }
+    items.sort((a, b) => b.ts - a.ts);
+
+    clear(feedBox);
+    feedBox.appendChild(el("div", { class: "panel" }, [
+      el("div", { class: "cardhead" }, [
+        el("div", { class: "t", text: "直近のアクティビティ" }),
+        el("button", { class: "more", text: "ログ", onclick: () => setView("logs") }),
+      ]),
+      items.length
+        ? el("div", { class: "feed" }, items.slice(0, 12).map(i => el("div", { class: "it" }, [
+            el("span", { class: "at", text: fmtClock(i.ts) }),
+            el("span", { class: "tag", style: "color:" + i.color, text: i.tag }),
+            el("span", { class: "msg", text: i.msg }),
+          ])))
+        : el("div", { class: "muted small", text: "まだ動きがありません" }),
+    ]));
+  }
+
+  // --- 指標カード ---
+  let sparks = { fps: [], cpu: [], playersPeak: null };
+
+  function paint(s) {
+    const m = s.metrics || {}, h = s.host || {};
+    clear(cards);
+
+    // 状態
+    const online = s.online;
+    cards.appendChild(statcard("状態",
+      el("div", { class: "state", style: "color:" + (online ? "var(--ok)" : "var(--crit)") }, [
+        el("span", { class: "statusdot " + (online ? "online" : "offline") }),
+        el("span", { text: online ? "稼働中" : "応答なし" }),
+      ]),
+      lastSavedText,
+    ));
+
+    // サーバFPS
+    cards.appendChild(statcard("サーバFPS",
+      bigValue(m.serverfps !== undefined ? m.serverfps : "-", "", "var(--accent)"),
+      m.serverframetime !== undefined ? m.serverframetime + "ms" : "",
+      sparkline(sparks.fps, "#4cc2ff"),
+    ));
+
+    // プレイヤー
+    const cur = m.currentplayernum, max = m.maxplayernum;
+    const SEGMENTS = 6;
+    const lit = (typeof cur === "number" && typeof max === "number" && max > 0)
+      ? Math.min(SEGMENTS, cur === 0 ? 0 : Math.max(1, Math.ceil(cur / max * SEGMENTS)))
+      : 0;
+    const seg = el("div", { class: "segbar" });
+    for (let i = 0; i < SEGMENTS; i++) {
+      seg.appendChild(el("span", { class: i < lit ? "on" : "" }));
+    }
+    cards.appendChild(statcard("プレイヤー",
+      el("div", { class: "v" }, [
+        String(cur !== undefined ? cur : "-"),
+        el("span", { class: "unit", text: " / " + (max !== undefined ? max : "-") }),
+      ]),
+      sparks.playersPeak !== null ? "直近1hのピーク " + sparks.playersPeak : "",
+      seg,
+    ));
+
+    // CPU
+    cards.appendChild(statcard("CPU",
+      bigValue(h.cpu_percent !== undefined ? h.cpu_percent.toFixed(1) : "-", "%"),
+      h.cpu_count ? h.cpu_count + " vCPU" : "",
+      sparkline(sparks.cpu, "#5b86a8"),
+    ));
+
+    // メモリ
+    const mem = h.mem_percent;
+    const memColor = mem >= 90 ? "var(--crit)" : mem >= 80 ? "var(--warn)" : "#fff";
+    const bar = el("div", { class: "meter" },
+      el("i", {
+        style: "width:" + Math.min(100, mem || 0) + "%;background:"
+          + (mem >= 90 ? "linear-gradient(90deg,#ff8fa3,#e5566e)"
+             : mem >= 80 ? "linear-gradient(90deg,#ffc44d,#f2a25c)"
+             : "linear-gradient(90deg,#4cc2ff,#67c7f5)"),
+      }));
+    cards.appendChild(statcard("メモリ",
+      bigValue(mem !== undefined ? mem.toFixed(1) : "-", "%", memColor),
+      h.mem_used_mb !== undefined
+        ? h.mem_used_mb.toLocaleString() + " / " + h.mem_total_mb.toLocaleString() + " MB" : "",
+      bar,
+    ));
+
+    // 進行中のシーケンス
     clear(restartBox);
     const r = s.restart || {};
     if (r.in_progress) {
       const remain = r.seconds_remaining;
-      restartBox.appendChild(el("div", { class: "row" }, [
-        el("strong", { text: r.mode_label + "シーケンス進行中" }),
-        el("span", { class: "muted", text: "(" + r.phase + ") " + r.message }),
-        remain !== null && remain !== undefined ? el("span", { text: "残り " + fmtDuration(remain) }) : null,
-        r.cancellable ? gate(el("button", {
-          class: "btn danger", text: "キャンセル",
-          onclick: () => openModal({
-            title: r.mode_label + "をキャンセルします",
-            lead: "予告済みのプレイヤーにキャンセルを通知します。",
-            confirmLabel: "キャンセルする",
-            async onConfirm() {
-              await post("/api/restart/cancel");
-              toast(r.mode_label + "をキャンセルしました", "ok");
-              loadHistory();
-            },
-          }),
-        })) : null,
-      ]));
+      restartBox.appendChild(el("div", { class: "panel", style: "margin-top:16px" },
+        el("div", { class: "row" }, [
+          el("strong", { text: r.mode_label + "シーケンス進行中" }),
+          el("span", { class: "muted", text: "(" + r.phase + ") " + r.message }),
+          remain !== null && remain !== undefined ? el("span", { class: "mono", text: "残り " + fmtDuration(remain) }) : null,
+          r.cancellable ? gate(el("button", {
+            class: "btn small danger", text: "キャンセル",
+            onclick: () => openModal({
+              title: r.mode_label + "をキャンセルします",
+              lead: "予告済みのプレイヤーにキャンセルを通知します。",
+              confirmLabel: "キャンセルする",
+              async onConfirm() {
+                await post("/api/restart/cancel");
+                toast(r.mode_label + "をキャンセルしました", "ok");
+                loadHistory();
+              },
+            }),
+          })) : null,
+        ])));
       showBanner(r.mode_label + "シーケンスが進行中です: " + r.message, "warn");
     } else {
-      restartBox.appendChild(el("div", { class: "row" }, [
-        el("span", { class: "muted", text: "直近の実行: " + (r.phase && r.phase !== "idle"
-          ? r.mode_label + " / " + r.phase + " / " + (r.message || "") : "なし") }),
-        el("button", {
-          class: "btn small", text: "サーバ操作へ",
-          onclick: () => setView("settings"),
-        }),
-      ]));
       showBanner(s.online ? "" : "Palworld サーバに接続できません: " + (s.error || ""), "crit");
     }
+  }
+
+  // スパークラインと「直近1hのピーク」は履歴から作る。
+  // 1秒ごとに取り直す必要はないので、更新はゆっくりでよい
+  let lastSavedText = "";
+  async function loadTrends() {
+    try {
+      const data = await api("/api/history?minutes=60");
+      sparks.fps = data.records.map(r => r.fps).filter(v => typeof v === "number").slice(-40);
+      sparks.cpu = data.records.map(r => r.cpu_percent).filter(v => typeof v === "number").slice(-40);
+      const nums = data.records.map(r => r.players).filter(v => typeof v === "number");
+      sparks.playersPeak = nums.length ? Math.max.apply(null, nums) : null;
+    } catch (e) { /* 指標カードは status だけでも出る */ }
+
+    try {
+      const w = await api("/api/world/backups");
+      lastSavedText = w.last_saved_at ? "最終保存 " + fmtTime(w.last_saved_at) : "";
+    } catch (e) { /* セーブ情報が無くてもカードは出す */ }
   }
 
   let wasInProgress = false;
@@ -967,31 +1636,51 @@ function renderDashboard(root) {
       const s = await api("/api/status");
       state.status = s;
       paint(s);
-      buildSidebar();
+      buildTopbar();   // 1秒ごとに見ているので、上部バーもここで更新する
       // シーケンスが終わったタイミングで履歴を取り直す
       const now = !!(s.restart && s.restart.in_progress);
-      if (wasInProgress && !now) loadHistory();
+      if (wasInProgress && !now) { loadHistory(); loadNext(); loadFeed(); }
       wasInProgress = now;
     } catch (e) {
       showBanner("管理ツールへの接続に失敗しました: " + e.message, "crit");
     }
   }
-  tick();
+
+  paintAnnounce();
+  loadTrends().then(tick);
   loadHistory();
+  loadNext();
+  loadFeed();
+
   state.refresher = setInterval(tick, 1000);
+  // 傾向・予定・アクティビティは1秒ごとに取り直す必要がない。
+  // ここを速くするとゲームサーバではなく管理ツール側の負荷になる
+  state.timers.push(setInterval(() => { loadTrends(); loadNext(); loadFeed(); }, 30000));
 }
 
 // --------------------------------------------------------------------------
 // プレイヤー管理
 // --------------------------------------------------------------------------
 function renderPlayers(root) {
-  root.appendChild(el("h1", { text: "プレイヤー" }));
-  const info = el("div", { class: "muted", style: "margin-bottom:10px" });
-  const wrap = el("div", { class: "tablewrap" });
+  const lead = el("div", { class: "lead" });
+  const search = el("input", { type: "text", placeholder: "名前 / UserID で絞り込み", style: "width:260px" });
+  const wrap = el("div", { class: "pcards" });
+  const eventsBox = el("div");
+
+  root.appendChild(el("div", { class: "pagehead" }, [
+    el("div", null, [el("h1", { text: "プレイヤー" }), lead]),
+    el("div", { class: "right" }, [
+      search,
+      el("button", { class: "btn", text: "更新", onclick: () => load() }),
+    ]),
+  ]));
   const note = readOnlyNote("プレイヤーのキック・BAN にはログインが必要です。一覧の閲覧はできます。");
   if (note) root.appendChild(note);
-  root.appendChild(info);
   root.appendChild(wrap);
+  root.appendChild(eventsBox);
+
+  search.addEventListener("input", () => paint());
+  let players = [];
 
   function act(kind, player) {
     const label = kind === "kick" ? "キック" : "BAN";
@@ -1018,37 +1707,104 @@ function renderPlayers(root) {
     });
   }
 
+  // UserID は長いので、頭と尻だけ見せる。突き合わせにはこれで足りる
+  function shortId(id) {
+    const s = String(id || "");
+    return s.length > 18 ? s.slice(0, 10) + "…" + s.slice(-4) : s;
+  }
+
+  function playerCard(p) {
+    const initial = (p.name || "?").trim().charAt(0).toUpperCase();
+    return el("div", { class: "pcard" }, [
+      el("div", { class: "who" }, [
+        el("div", { class: "avatar", text: initial }),
+        el("div", { style: "min-width:0" }, [
+          el("div", { class: "pname", text: p.name }),
+          el("div", { class: "pid", text: shortId(p.userId) }),
+        ]),
+        el("span", { class: "tag-online", text: "接続中" }),
+      ]),
+      el("div", { class: "stats" }, [
+        el("div", { class: "stat" }, [
+          el("div", { class: "k", text: "Lv" }), el("div", { class: "v", text: p.level }),
+        ]),
+        el("div", { class: "stat" }, [
+          el("div", { class: "k", text: "Ping" }),
+          el("div", { class: "v" + (p.ping >= 150 ? " " : ""), style: p.ping >= 150 ? "color:var(--warn)" : "",
+            text: p.ping }),
+        ]),
+        el("div", { class: "stat" }, [
+          el("div", { class: "k", text: "滞在" }),
+          el("div", { class: "v", text: p.stay_seconds === null || p.stay_seconds === undefined
+            ? "-" : fmtDuration(p.stay_seconds) }),
+        ]),
+      ]),
+      el("div", { class: "pid" }, [
+        "座標 " + Math.round(p.location_x) + ", " + Math.round(p.location_y),
+        p.building_count !== undefined ? "　建築 " + p.building_count : null,
+      ]),
+      el("div", { class: "row" }, [
+        gate(el("button", { class: "btn small", text: "キック", onclick: () => act("kick", p) })),
+        gate(el("button", { class: "btn small danger", text: "BAN", onclick: () => act("ban", p) })),
+      ]),
+    ]);
+  }
+
+  function paint() {
+    const q = search.value.trim().toLowerCase();
+    const shown = players.filter(p =>
+      !q || String(p.name || "").toLowerCase().includes(q)
+         || String(p.userId || "").toLowerCase().includes(q));
+
+    clear(wrap);
+    if (!shown.length) {
+      wrap.appendChild(el("div", { class: "panel muted",
+        text: players.length ? "該当するプレイヤーがいません" : "接続中のプレイヤーはいません" }));
+      return;
+    }
+    for (const p of shown) wrap.appendChild(playerCard(p));
+  }
+
+  async function loadEvents() {
+    let data;
+    try { data = await api("/api/players/events?limit=15"); }
+    catch (e) { return; }
+
+    clear(eventsBox);
+    eventsBox.appendChild(el("h2", { text: "最近の入退室" }));
+    if (!data.events.length) {
+      eventsBox.appendChild(el("div", { class: "panel muted",
+        text: "まだ記録がありません。管理ツールが見ている間の出入りだけが残ります。" }));
+      return;
+    }
+    const list = el("div", { class: "timeline" });
+    for (const e of data.events) {
+      list.appendChild(el("div", { class: "ev" }, [
+        el("span", { class: "at", text: fmtTs(e.ts).split(" ")[1] || fmtTs(e.ts) }),
+        el("span", { class: "kind " + e.kind, text: e.kind === "join" ? "JOIN" : "LEFT" }),
+        el("span", { class: "subj", text: e.name }),
+        e.stay_seconds !== null && e.stay_seconds !== undefined
+          ? el("span", { class: "note", text: "滞在 " + fmtDuration(e.stay_seconds) }) : null,
+      ]));
+    }
+    eventsBox.appendChild(el("div", { class: "panel" }, [
+      list,
+      el("div", { class: "muted small", style: "margin-top:14px" },
+        `${Math.round(data.poll_interval)}秒ごとの観測から作っています。`
+        + "これより短い出入りは記録されません（REST API に入退室の通知が無いため）。"),
+    ]));
+  }
+
   async function load() {
     let data;
     try { data = await api("/api/players"); }
-    catch (e) { info.textContent = "取得に失敗しました: " + e.message; return; }
+    catch (e) { lead.textContent = "取得に失敗しました: " + e.message; return; }
 
-    info.textContent = "接続中 " + data.count + " 人";
-    clear(wrap);
-    if (!data.count) {
-      wrap.appendChild(el("div", { class: "muted", style: "padding:16px", text: "接続中のプレイヤーはいません" }));
-      return;
-    }
-    const table = el("table");
-    table.appendChild(el("thead", null, el("tr", null,
-      ["名前", "Lv", "Ping", "建築数", "座標", "UserID", ""].map(h => el("th", { text: h })))));
-    const tbody = el("tbody");
-    for (const p of data.players) {
-      tbody.appendChild(el("tr", null, [
-        el("td", null, [el("div", { text: p.name }), el("div", { class: "muted small", text: p.accountName || "" })]),
-        el("td", { text: p.level }),
-        el("td", { text: p.ping, class: p.ping >= 150 ? "value warn" : "" }),
-        el("td", { text: p.building_count }),
-        el("td", { class: "muted", text: Math.round(p.location_x) + ", " + Math.round(p.location_y) }),
-        el("td", { class: "muted small", text: p.userId }),
-        el("td", null, el("div", { class: "row" }, [
-          gate(el("button", { class: "btn", text: "キック", onclick: () => act("kick", p) })),
-          gate(el("button", { class: "btn danger", text: "BAN", onclick: () => act("ban", p) })),
-        ])),
-      ]));
-    }
-    table.appendChild(tbody);
-    wrap.appendChild(table);
+    players = data.players;
+    const max = state.status && state.status.metrics ? state.status.metrics.maxplayernum : null;
+    lead.textContent = "接続中 " + data.count + "人" + (max ? " ／ 最大 " + max + "人" : "");
+    paint();
+    loadEvents();
   }
 
   load();
@@ -1059,14 +1815,28 @@ function renderPlayers(root) {
 // ワールド（プレイヤー座標のマップ）
 // --------------------------------------------------------------------------
 function renderWorld(root) {
-  root.appendChild(el("h1", { text: "ワールド" }));
-  root.appendChild(el("div", { class: "muted", style: "margin-bottom:10px",
-    text: "REST API が座標を返すのは接続中プレイヤーのみです（パル/NPCは非公開）。" }));
   const canvas = el("canvas", { class: "worldmap", width: 900, height: 560 });
-  const alerts = el("div", { style: "margin-top:12px" });
-  root.appendChild(canvas);
-  root.appendChild(el("h2", { text: "異常検知" }));
-  root.appendChild(alerts);
+  const alerts = el("div");
+  const saveBox = el("div");
+  const positions = el("div");
+
+  root.appendChild(el("div", { class: "pagehead" }, [
+    el("div", null, [
+      el("h1", { text: "ワールド" }),
+      el("div", { class: "lead",
+        text: "REST API が座標を返すのは接続中プレイヤーのみです（パル/NPCは非公開）。" }),
+    ]),
+  ]));
+
+  // 左に地図、右にセーブ情報。狭い画面では縦に積む
+  root.appendChild(el("div", { class: "chartgrid", style: "grid-template-columns:minmax(0,2fr) minmax(260px,1fr)" }, [
+    el("div", null, [
+      el("div", { class: "panel", style: "padding:16px" }, canvas),
+      el("h2", { text: "異常検知" }),
+      alerts,
+    ]),
+    el("div", null, [positions, saveBox]),
+  ]));
 
   const RANGE = 200000; // ワールド座標のおおよその表示範囲
 
@@ -1074,47 +1844,203 @@ function renderWorld(root) {
     const ctx = canvas.getContext("2d");
     const w = canvas.width, h = canvas.height;
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "#161923"; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#0a1928"; ctx.fillRect(0, 0, w, h);
 
-    ctx.strokeStyle = "#2e3342"; ctx.lineWidth = 1;
-    for (let i = 1; i < 8; i++) {
-      ctx.beginPath(); ctx.moveTo(w * i / 8, 0); ctx.lineTo(w * i / 8, h); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, h * i / 8); ctx.lineTo(w, h * i / 8); ctx.stroke();
+    // 56px 間隔の方眼。デザインの背景に合わせている
+    ctx.strokeStyle = "#12293d"; ctx.lineWidth = 1;
+    for (let x = 0; x < w; x += 56) {
+      ctx.beginPath(); ctx.moveTo(x + .5, 0); ctx.lineTo(x + .5, h); ctx.stroke();
+    }
+    for (let y = 0; y < h; y += 56) {
+      ctx.beginPath(); ctx.moveTo(0, y + .5); ctx.lineTo(w, y + .5); ctx.stroke();
     }
     const toX = (x) => (x + RANGE) / (RANGE * 2) * w;
     const toY = (y) => h - (y + RANGE) / (RANGE * 2) * h;
 
     for (const p of points) {
       if (p.x === null || p.y === null) continue;
-      const cx = Math.max(8, Math.min(w - 8, toX(p.x)));
-      const cy = Math.max(8, Math.min(h - 8, toY(p.y)));
+      const cx = Math.max(10, Math.min(w - 10, toX(p.x)));
+      const cy = Math.max(10, Math.min(h - 10, toY(p.y)));
+      const color = markerColor(p);
+      // 光輪 → 点 の順に描くと、点が輪に埋もれない
+      ctx.beginPath(); ctx.arc(cx, cy, 11, 0, Math.PI * 2);
+      ctx.fillStyle = color + "38"; ctx.fill();
       ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2);
-      ctx.fillStyle = p.ping >= 150 ? "#e8a33d" : "#4da3ff"; ctx.fill();
-      ctx.fillStyle = "#e6e9f0"; ctx.font = "12px system-ui";
-      ctx.fillText(p.name + " (Lv" + p.level + ")", cx + 10, cy + 4);
+      ctx.fillStyle = color; ctx.fill();
+
+      const label = p.name + " (Lv" + p.level + ")";
+      ctx.font = "600 12px 'Zen Maru Gothic', system-ui";
+      const tw = ctx.measureText(label).width;
+      ctx.fillStyle = "#12293d";
+      roundRect(ctx, cx + 11, cy - 10, tw + 14, 20, 6);
+      ctx.fill();
+      ctx.strokeStyle = "#23415c"; ctx.stroke();
+      ctx.fillStyle = "#e9f1f7";
+      ctx.fillText(label, cx + 18, cy + 4);
     }
     if (!points.length) {
-      ctx.fillStyle = "#97a0b5"; ctx.font = "14px system-ui";
-      ctx.fillText("接続中のプレイヤーはいません", 20, 30);
+      ctx.fillStyle = "#54789a"; ctx.font = "14px 'Zen Maru Gothic', system-ui";
+      ctx.fillText("接続中のプレイヤーはいません", 20, 32);
     }
+  }
+
+  // 名前ごとに色を散らす。誰がどの点かを地図と一覧で対応させるため
+  const MARKERS = ["#4cc2ff", "#ffc44d", "#7ee7b4", "#c9a0ff", "#ff9d7a"];
+  function markerColor(p) {
+    if (p.ping >= 150) return "#ffc44d";
+    let n = 0;
+    for (const ch of String(p.userId || p.name || "")) n = (n + ch.charCodeAt(0)) % 997;
+    return MARKERS[n % MARKERS.length];
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function paintPositions(points) {
+    clear(positions);
+    positions.appendChild(el("h2", { style: "margin-top:0", text: "接続中の位置" }));
+    if (!points.length) {
+      positions.appendChild(el("div", { class: "panel muted", text: "接続中のプレイヤーはいません" }));
+      return;
+    }
+    positions.appendChild(el("div", { class: "panel" },
+      points.map(p => el("div", { class: "row", style: "gap:10px;flex-wrap:nowrap;margin-bottom:10px" }, [
+        el("span", { class: "statusdot", style: "background:" + markerColor(p) + ";box-shadow:none" }),
+        el("span", { style: "flex:1;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap",
+          text: p.name }),
+        el("span", { class: "mono small muted",
+          text: Math.round(p.x) + ", " + Math.round(p.y) }),
+      ]))));
+  }
+
+  // --- ワールドセーブとバックアップ ---
+  async function loadSave() {
+    let data;
+    try { data = await api("/api/world/backups"); }
+    catch (e) { return; }
+
+    clear(saveBox);
+    saveBox.appendChild(el("h2", { text: "ワールドセーブ" }));
+
+    const rows = el("div", { class: "mono small muted", style: "line-height:2" }, [
+      el("div", { text: "最終更新 " + (data.last_saved_at ? fmtTime(data.last_saved_at) : "-") }),
+      el("div", { text: "サイズ " + fmtBytes(data.size) + (data.files ? "（" + data.files + " ファイル）" : "") }),
+      el("div", { text: "保持 " + data.keep + " 世代" }),
+    ]);
+
+    const actions = el("div", { class: "row", style: "margin-top:14px" }, [
+      gate(el("button", {
+        class: "btn primary", text: "いまバックアップ",
+        onclick: () => openModal({
+          title: "ワールドをバックアップします",
+          lead: data.server_running
+            ? "先にワールド保存を実行してから固めます。"
+            : "サーバが停止しているので、そのまま固めます。",
+          confirmLabel: "バックアップする",
+          body: data.server_running ? [
+            el("div", { class: "warnbox" },
+              "稼働中のセーブは書き込みの途中にあたる可能性があります。"
+              + "確実に取りたい場合はサーバを停止してから実行してください。"),
+          ] : [],
+          async onConfirm() {
+            const r = await post("/api/world/backups");
+            toast("バックアップしました（" + fmtBytes(r.backup.size) + "）", "ok");
+            loadSave();
+          },
+        }),
+      })),
+    ]);
+
+    saveBox.appendChild(el("div", { class: "panel" }, [
+      data.exists ? rows : el("div", { class: "muted small",
+        text: "セーブディレクトリが見つかりません: " + data.path }),
+      actions,
+    ]));
+
+    saveBox.appendChild(el("h2", { text: "バックアップ（" + data.backups.length + "）" }));
+    if (!data.backups.length) {
+      saveBox.appendChild(el("div", { class: "panel muted", text: "まだバックアップはありません" }));
+      return;
+    }
+    const list = el("div", { class: "panel", style: "padding:14px" });
+    for (const b of data.backups) {
+      list.appendChild(el("div", { style: "padding:10px 0;border-bottom:1px solid var(--line)" }, [
+        el("div", { class: "mono small", text: fmtTime(b.created_at) }),
+        el("div", { class: "muted small", text: fmtBytes(b.size) }),
+        el("div", { class: "row", style: "margin-top:8px" }, [
+          gate(el("button", {
+            class: "btn small", text: "ダウンロード",
+            onclick: () => { window.location.href = "/api/world/backups/" + encodeURIComponent(b.name) + "/download"; },
+          })),
+          gate(el("button", {
+            class: "btn small danger", text: "復元",
+            onclick: () => openModal({
+              title: "ワールドを復元します",
+              lead: b.name + " の内容でセーブを置き換えます。",
+              danger: true,
+              confirmLabel: "復元する",
+              body: [
+                el("div", { class: "warnbox" },
+                  data.server_running
+                    ? "サーバが稼働中です。復元はサーバ停止中にしか行えません（稼働中に差し替えても、"
+                      + "サーバが持っている状態で上書きされて失われます）。"
+                    : "いまのセーブは失われます。復元前の状態は自動で退避しますが、"
+                      + "念のため先にバックアップを取ることをおすすめします。"),
+              ],
+              async onConfirm() {
+                await post("/api/world/backups/" + encodeURIComponent(b.name) + "/restore");
+                toast("復元しました。サーバを起動すると反映されます", "ok");
+                loadSave();
+              },
+            }),
+          })),
+          gate(el("button", {
+            class: "btn small ghost", text: "削除",
+            onclick: () => openModal({
+              title: "バックアップを削除します",
+              lead: b.name,
+              danger: true,
+              confirmLabel: "削除する",
+              async onConfirm() {
+                await del("/api/world/backups/" + encodeURIComponent(b.name));
+                toast("削除しました", "ok");
+                loadSave();
+              },
+            }),
+          })),
+        ]),
+      ]));
+    }
+    saveBox.appendChild(list);
   }
 
   async function load() {
     try {
       const data = await api("/api/world");
       draw(data.points);
+      paintPositions(data.points);
       clear(alerts);
       if (!data.anomalies.length) {
-        alerts.appendChild(el("div", { class: "muted", text: "異常はありません" }));
+        alerts.appendChild(el("div", { class: "panel muted", text: "異常はありません" }));
       }
       for (const a of data.anomalies) {
         const label = a.type === "high_ping" ? "Pingが高い" : a.type === "many_buildings" ? "建築数が多い" : a.type;
-        alerts.appendChild(el("div", { class: "panel", style: "margin-bottom:8px" },
-          [el("strong", { text: a.name }), " — " + label + ": " + a.value]));
+        alerts.appendChild(el("div", { class: "panel", style: "margin-bottom:10px" }, [
+          el("strong", { text: a.name }),
+          el("span", { class: "muted", text: " — " + label + ": " + a.value }),
+        ]));
       }
     } catch (e) { toast(e.message, "err"); }
   }
   load();
+  loadSave();
   state.refresher = setInterval(load, 5000);
 }
 
@@ -1122,79 +2048,136 @@ function renderWorld(root) {
 // 稼働履歴
 // --------------------------------------------------------------------------
 function renderHistory(root) {
-  root.appendChild(el("h1", { text: "稼働履歴" }));
-  const select = el("select", null, [
-    el("option", { value: "60", text: "直近1時間" }),
-    el("option", { value: "360", text: "直近6時間" }),
-    el("option", { value: "1440", text: "直近24時間" }),
-  ]);
-  root.appendChild(el("div", { class: "row", style: "margin-bottom:12px" }, [
-    select,
-    el("button", { class: "btn", text: "今すぐ1点記録", onclick: async () => { await post("/api/sample"); load(); } }),
+  // 期間はピルで切り替える。1時間より長い範囲は記録が残っていれば出る
+  const PERIODS = [
+    { minutes: 60, label: "1時間" },
+    { minutes: 360, label: "6時間" },
+    { minutes: 1440, label: "24時間" },
+    { minutes: 10080, label: "7日" },
+  ];
+  let minutes = 60;
+
+  const lead = el("div", { class: "lead" });
+  const pills = el("div", { class: "chips" });
+  root.appendChild(el("div", { class: "pagehead" }, [
+    el("div", null, [el("h1", { text: "稼働履歴" }), lead]),
+    el("div", { class: "right" }, [
+      pills,
+      gate(el("button", {
+        class: "btn small", text: "今すぐ1点記録",
+        onclick: async () => { await post("/api/sample"); load(); },
+      })),
+    ]),
   ]));
 
+  function paintPills() {
+    clear(pills);
+    for (const p of PERIODS) {
+      pills.appendChild(el("button", {
+        class: "chip" + (p.minutes === minutes ? " on" : ""),
+        text: p.label,
+        onclick: () => { minutes = p.minutes; paintPills(); load(); },
+      }));
+    }
+  }
+  paintPills();
+
   const charts = [
-    { key: "fps", label: "サーバFPS", color: "#4da3ff" },
-    { key: "players", label: "プレイヤー数", color: "#3bbf7d" },
-    { key: "mem_percent", label: "メモリ使用率 (%)", color: "#e8a33d" },
+    { key: "fps", label: "サーバFPS", color: "#4cc2ff", unit: "" },
+    { key: "players", label: "プレイヤー数", color: "#7ee7b4", unit: "" },
+    { key: "mem_percent", label: "メモリ使用率", color: "#ffc44d", unit: "%" },
+    { key: "cpu_percent", label: "CPU使用率", color: "#5b86a8", unit: "%" },
   ];
+  const grid = el("div", { class: "chartgrid" });
   for (const c of charts) {
-    root.appendChild(el("h2", { text: c.label }));
+    c.head = el("div", { class: "charthead" });
     // 高さ比は CSS で持つ。インライン style だとメディアクエリで上書きできない
     c.canvas = el("canvas", { class: "chart", width: 900, height: 200 });
-    root.appendChild(c.canvas);
+    c.axis = el("div", { class: "axis" });
+    grid.appendChild(el("div", { class: "panel" }, [c.head, c.canvas, c.axis]));
   }
-  const empty = el("div", { class: "muted", style: "margin-top:12px" });
+  root.appendChild(grid);
+  const empty = el("div", { class: "muted small", style: "margin-top:14px" });
   root.appendChild(empty);
+
+  function paintHead(c, records) {
+    const values = records.map(r => r[c.key]).filter(v => typeof v === "number");
+    clear(c.head);
+    clear(c.axis);
+    const last = values.length ? values[values.length - 1] : null;
+    const avg = values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+    const min = values.length ? Math.min.apply(null, values) : null;
+
+    c.head.appendChild(el("span", { class: "t", text: c.label }));
+    if (avg !== null) {
+      c.head.appendChild(el("span", { class: "sub",
+        text: "平均 " + avg.toFixed(1) + c.unit + " / 最低 " + min.toFixed(1) + c.unit }));
+    }
+    c.head.appendChild(el("span", { class: "now", style: "color:" + c.color,
+      text: last === null ? "-" : last.toFixed(c.unit === "%" ? 1 : 0) + c.unit }));
+
+    if (records.length) {
+      c.axis.appendChild(el("span", { text: fmtClock(records[0].ts) }));
+      c.axis.appendChild(el("span", { text: fmtClock(records[records.length - 1].ts) }));
+    }
+  }
 
   function plot(canvas, records, key, color) {
     const ctx = canvas.getContext("2d");
-    const w = canvas.width, h = canvas.height, pad = 28;
+    const w = canvas.width, h = canvas.height, pad = 10;
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "#1a1d26"; ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "#0a1928"; ctx.fillRect(0, 0, w, h);
+
+    // 目安の横罫。値は軸ラベルではなくカード見出しの数値で読ませる
+    ctx.strokeStyle = "#16293c"; ctx.lineWidth = 1;
+    for (let i = 1; i < 4; i++) {
+      const y = Math.round(h * i / 4) + .5;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
 
     const values = records.map(r => r[key]).filter(v => typeof v === "number");
     if (values.length < 2) {
-      ctx.fillStyle = "#97a0b5"; ctx.font = "13px system-ui";
-      ctx.fillText("データが足りません", pad, h / 2);
+      ctx.fillStyle = "#54789a"; ctx.font = "13px 'Zen Maru Gothic', system-ui";
+      ctx.fillText("データが足りません", 14, h / 2);
       return;
     }
     const max = Math.max.apply(null, values) * 1.15 || 1;
     const t0 = records[0].ts, t1 = records[records.length - 1].ts || t0 + 1;
-    const toX = (ts) => pad + (ts - t0) / Math.max(1, t1 - t0) * (w - pad * 2);
+    const toX = (ts) => (ts - t0) / Math.max(1, t1 - t0) * w;
     const toY = (v) => h - pad - (v / max) * (h - pad * 2);
 
-    ctx.strokeStyle = "#2e3342"; ctx.beginPath();
-    ctx.moveTo(pad, h - pad); ctx.lineTo(w - pad, h - pad); ctx.stroke();
+    // 線の下を薄く塗ると、値の大小が形で分かる
+    const pts = records.filter(r => typeof r[key] === "number");
+    ctx.beginPath();
+    ctx.moveTo(toX(pts[0].ts), h);
+    for (const r of pts) ctx.lineTo(toX(r.ts), toY(r[key]));
+    ctx.lineTo(toX(pts[pts.length - 1].ts), h);
+    ctx.closePath();
+    ctx.fillStyle = color + "22"; ctx.fill();
 
-    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
-    let started = false;
-    for (const r of records) {
-      if (typeof r[key] !== "number") continue;
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.beginPath();
+    pts.forEach((r, i) => {
       const x = toX(r.ts), y = toY(r[key]);
-      started ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-      started = true;
-    }
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
     ctx.stroke();
-
-    ctx.fillStyle = "#97a0b5"; ctx.font = "11px system-ui";
-    ctx.fillText(max.toFixed(0), 4, pad);
-    ctx.fillText("0", 4, h - pad + 4);
-    ctx.fillText(new Date(t0 * 1000).toLocaleTimeString("ja-JP", { hour12: false }), pad, h - 8);
-    const lastLabel = new Date(t1 * 1000).toLocaleTimeString("ja-JP", { hour12: false });
-    ctx.fillText(lastLabel, w - pad - ctx.measureText(lastLabel).width, h - 8);
   }
 
   async function load() {
     try {
-      const data = await api("/api/history?minutes=" + select.value);
+      const data = await api("/api/history?minutes=" + minutes);
+      lead.textContent = data.records.length
+        ? data.records.length + " 件 ／ " + data.interval + "秒ごとに記録"
+        : "まだ記録がありません";
       empty.textContent = data.records.length
-        ? data.records.length + " 件 / 記録間隔 " + data.interval + "秒"
-        : "まだ記録がありません（監視ループが " + data.interval + " 秒ごとに記録します）";
-      for (const c of charts) plot(c.canvas, data.records, c.key, c.color);
+        ? ""
+        : "監視ループが " + data.interval + " 秒ごとに記録します。しばらく待つか「今すぐ1点記録」を押してください。";
+      for (const c of charts) {
+        plot(c.canvas, data.records, c.key, c.color);
+        paintHead(c, data.records);
+      }
     } catch (e) { toast(e.message, "err"); }
   }
-  select.addEventListener("change", load);
   load();
   state.refresher = setInterval(load, 30000);
 }
@@ -2251,26 +3234,83 @@ function specPicker(initialKind, initialSpec, onKindChange) {
 const ACTION_LABELS = { restart: "再起動", stop: "停止", start: "起動" };
 
 function renderSchedules(root) {
-  root.appendChild(el("h1", { text: "スケジュール" }));
-  const tzInfo = el("div", { class: "muted", style: "margin-bottom:12px" });
-  root.appendChild(tzInfo);
-  root.appendChild(el("div", { class: "infobox", style: "margin-bottom:14px" }, [
-    el("div", { text: "サーバの起動 / 停止 / 再起動を予約できます。" }),
-    el("div", { class: "muted small", style: "margin-top:4px",
-      text: "設定ファイルを変更したい場合は「停止」と「起動」を別々に予約してメンテ枠を作り、"
-          + "停止が完了してからゲーム設定タブで編集してください"
-          + "（サーバは停止時に設定ファイルを上書きするため、停止前の編集は失われます）。" }),
+  const tzInfo = el("div", { class: "lead mono" });
+  root.appendChild(el("div", { class: "pagehead" }, [
+    el("div", null, [el("h1", { text: "スケジュール" }), tzInfo]),
+    el("div", { class: "right" }, [
+      gate(el("button", {
+        class: "btn primary", text: "＋ 予約を追加",
+        onclick: () => openScheduleModal(null, load),
+      })),
+    ]),
   ]));
 
   const note = readOnlyNote("閲覧のみです。予約の追加・変更・削除にはログインが必要です。");
   if (note) root.appendChild(note);
 
-  root.appendChild(el("div", { class: "row", style: "margin-bottom:16px" }, [
-    gate(el("button", { class: "btn primary", text: "＋ 予約を追加", onclick: () => openScheduleModal(null, load) })),
+  const list = el("div");
+  const side = el("div");
+  root.appendChild(el("div", { class: "chartgrid", style: "grid-template-columns:minmax(0,2fr) minmax(280px,1fr)" }, [
+    list, side,
   ]));
 
-  const list = el("div");
-  root.appendChild(list);
+  /** 次に動く予約を目立たせる。一覧だけだと「次に何が起きるか」が読み取りにくい */
+  function paintNext(schedules) {
+    clear(side);
+    const next = schedules.find(s => s.enabled && s.next_action_at);
+    if (!next) {
+      side.appendChild(el("div", { class: "panel muted", text: "有効な予約はありません" }));
+    } else {
+      const at = new Date(next.next_action_at);
+      const remain = Math.max(0, (at.getTime() - Date.now()) / 1000);
+      side.appendChild(el("div", {
+        class: "panel",
+        style: "background:linear-gradient(160deg,#153854,#102a3f);border-color:#21455f",
+      }, [
+        el("div", { style: "font-size:15px;font-weight:700;margin-bottom:14px", text: "次に実行される予約" }),
+        el("div", { class: "row", style: "gap:8px;margin-bottom:10px" }, [
+          el("span", { class: "tag-changed", text: next.action_label }),
+          el("span", { class: "tag-added", style: "background:#17334b;color:#9dbdd6",
+            text: { daily: "毎日", once: "単発", cron: "cron" }[next.kind] || next.kind }),
+          next.skip_next ? el("span", { class: "tag-unknown", text: "今回は見送り" }) : null,
+        ]),
+        el("div", { class: "mono", style: "font-size:22px;font-weight:700;color:#fff",
+          text: fmtTime(next.next_action_at) }),
+        el("div", { class: "mono small muted", style: "margin-top:8px",
+          text: next.skip_next ? "この回は実行されません" : "あと " + fmtDuration(remain) }),
+        next.pending_changes
+          ? el("div", { class: "small muted", style: "margin-top:12px",
+              text: "保留中の設定変更 " + next.pending_changes + " 件を同時に反映します。" })
+          : null,
+        el("div", { class: "row", style: "margin-top:16px" }, [
+          gate(el("button", {
+            class: "btn small", text: "編集", style: "flex:1",
+            onclick: () => openScheduleModal(next, load),
+          })),
+          gate(el("button", {
+            class: "btn small", text: next.skip_next ? "見送りをやめる" : "今回はスキップ",
+            style: "flex:1",
+            onclick: () => toggleSkip(next),
+          })),
+        ]),
+      ]));
+    }
+    side.appendChild(el("div", { class: "panel", style: "margin-top:20px" }, [
+      el("div", { style: "font-size:14px;font-weight:700;margin-bottom:10px", text: "メンテ枠の作り方" }),
+      el("div", { class: "small muted",
+        text: "設定ファイルを変更したい場合は「停止」と「起動」を別々に予約してメンテ枠を作り、"
+            + "停止が完了してからゲーム設定タブで編集してください"
+            + "（サーバは停止時に設定ファイルを上書きするため、停止前の編集は失われます）。" }),
+    ]));
+  }
+
+  async function toggleSkip(s) {
+    try {
+      await patch("/api/schedules/" + s.id, { skip_next: !s.skip_next });
+      toast(s.skip_next ? "見送りを取り消しました" : "次の1回だけ見送ります", "ok");
+      load();
+    } catch (e) { toast(e.message, "err"); }
+  }
 
   function openScheduleModal(existing, onDone) {
     // 何をするか。起動だけは予告を伴わない
@@ -2352,6 +3392,7 @@ function renderSchedules(root) {
     try { data = await api("/api/schedules"); }
     catch (e) { toast(e.message, "err"); return; }
     tzInfo.textContent = "タイムゾーン: " + data.timezone;
+    paintNext(data.schedules);
     clear(list);
     if (!data.schedules.length) {
       list.appendChild(el("div", { class: "panel muted", text: "予約はありません" }));
@@ -2380,19 +3421,25 @@ function renderSchedules(root) {
         s.pending_changes
           ? el("td", null, el("span", { class: "tag-added", text: s.pending_changes + " 件反映" }))
           : el("td", { class: "muted small", text: "-" }),
-        el("td", { text: fmtTime(s.next_action_at) }),
-        el("td", { text: s.enabled ? "有効" : "無効", class: s.enabled ? "" : "muted" }),
+        el("td", { class: "mono", text: fmtTime(s.next_action_at) }),
+        el("td", null, s.skip_next
+          ? el("span", { class: "tag-unknown", text: "今回は見送り" })
+          : el("span", { class: s.enabled ? "" : "muted", text: s.enabled ? "有効" : "無効" })),
         el("td", null, el("div", { class: "row" }, [
-          gate(el("button", { class: "btn", text: "編集", onclick: () => openScheduleModal(s, load) })),
+          gate(el("button", { class: "btn small", text: "編集", onclick: () => openScheduleModal(s, load) })),
           gate(el("button", {
-            class: "btn", text: s.enabled ? "無効化" : "有効化",
+            class: "btn small", text: s.skip_next ? "見送りをやめる" : "今回はスキップ",
+            onclick: () => toggleSkip(s),
+          })),
+          gate(el("button", {
+            class: "btn small", text: s.enabled ? "無効化" : "有効化",
             onclick: async () => {
               try { await patch("/api/schedules/" + s.id, { enabled: !s.enabled }); load(); }
               catch (e) { toast(e.message, "err"); }
             }
           })),
           gate(el("button", {
-            class: "btn danger", text: "削除",
+            class: "btn small danger", text: "削除",
             onclick: () => openModal({
               title: "予約を削除します",
               lead: (s.label || s.spec) + " の予約を削除します。",
@@ -2416,32 +3463,99 @@ function renderSchedules(root) {
 // ログ（WebSocket ストリーミング）
 // --------------------------------------------------------------------------
 function renderLogs(root) {
-  root.appendChild(el("h1", { text: "ログ" }));
-  const status = el("span", { class: "muted", text: "接続中…" });
+  const LEVELS = [
+    { key: "", label: "ALL", color: "" },
+    { key: "info", label: "INFO", color: "" },
+    { key: "warn", label: "WARN", color: "var(--warn)" },
+    { key: "error", label: "ERROR", color: "var(--crit)" },
+  ];
+  let filter = "";
+  let counts = { info: 0, warn: 0, error: 0 };
+
+  const dot = el("span", { class: "statusdot" });
+  const status = el("span", { class: "small muted", text: "接続中…" });
+  const pills = el("div", { class: "chips" });
   const autoscroll = el("input", { type: "checkbox" });
   autoscroll.checked = true;
-  root.appendChild(el("div", { class: "row", style: "margin-bottom:10px" }, [
-    status,
-    el("label", { class: "row" }, [autoscroll, "自動スクロール"]),
-    el("button", { class: "btn", text: "クリア", onclick: () => clear(box) }),
-  ]));
   const box = el("div", { id: "log" });
+
+  root.appendChild(el("div", { class: "pagehead" }, [
+    el("div", null, [
+      el("h1", { text: "ログ" }),
+      el("div", { class: "row", style: "gap:8px;margin-top:8px" }, [dot, status]),
+    ]),
+    el("div", { class: "right" }, [
+      pills,
+      el("label", { class: "row small muted", style: "gap:6px" }, [autoscroll, "自動スクロール"]),
+      el("button", { class: "btn small", text: "クリア", onclick: () => { buffer.length = 0; repaint(); } }),
+    ]),
+  ]));
   root.appendChild(box);
 
+  // 受け取った行は全部持っておき、表示だけ絞る。
+  // 絞り込みを戻したときにサーバへ取り直しに行かなくて済む
+  const buffer = [];
+
+  function paintPills() {
+    clear(pills);
+    for (const lv of LEVELS) {
+      const n = lv.key ? counts[lv.key] : null;
+      pills.appendChild(el("button", {
+        class: "chip" + (lv.key === filter ? " on" : ""),
+        style: lv.key !== filter && lv.color ? "color:" + lv.color : "",
+        text: lv.label + (n ? " " + n : ""),
+        onclick: () => { filter = lv.key; paintPills(); repaint(); },
+      }));
+    }
+  }
+
+  function lineNode(record) {
+    const level = record.level || "info";
+    return el("div", { class: "ln" }, [
+      el("span", { class: "lt", text: fmtClock(record.ts) }),
+      el("span", { class: "lv " + level, text: level.toUpperCase() }),
+      el("span", { class: "lm" + (record.source === "app" ? " app" : ""), text: record.line }),
+    ]);
+  }
+
+  function repaint() {
+    clear(box);
+    for (const r of buffer) {
+      if (!filter || (r.level || "info") === filter) box.appendChild(lineNode(r));
+    }
+    if (autoscroll.checked) box.scrollTop = box.scrollHeight;
+  }
+
   function append(record) {
-    const time = new Date(record.ts * 1000).toLocaleTimeString("ja-JP", { hour12: false });
-    box.appendChild(el("div", { class: record.source }, "[" + time + "] " + record.line));
+    buffer.push(record);
+    while (buffer.length > 2000) buffer.shift();
+    const level = record.level || "info";
+    counts[level] = (counts[level] || 0) + 1;
+    paintPills();
+    if (filter && level !== filter) return;
+    box.appendChild(lineNode(record));
     while (box.childElementCount > 2000) box.removeChild(box.firstChild);
     if (autoscroll.checked) box.scrollTop = box.scrollHeight;
   }
 
+  paintPills();
+
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(proto + "//" + location.host + "/ws/logs");
   state.ws = ws;
-  ws.onopen = () => { status.textContent = "接続済み"; };
+  ws.onopen = () => {
+    dot.className = "statusdot online";
+    status.textContent = "接続済み";
+  };
   ws.onmessage = (ev) => { try { append(JSON.parse(ev.data)); } catch (e) { /* 無視 */ } };
-  ws.onclose = () => { status.textContent = "切断されました（画面を切り替えると再接続します）"; };
-  ws.onerror = () => { status.textContent = "接続エラー"; };
+  ws.onclose = () => {
+    dot.className = "statusdot offline";
+    status.textContent = "切断されました（画面を切り替えると再接続します）";
+  };
+  ws.onerror = () => {
+    dot.className = "statusdot offline";
+    status.textContent = "接続エラー";
+  };
 }
 
 // --------------------------------------------------------------------------
@@ -2449,12 +3563,29 @@ function renderLogs(root) {
 // --------------------------------------------------------------------------
 function openDrawer() { $("sidebar").classList.add("open"); $("backdrop").classList.add("show"); }
 function closeDrawer() { $("sidebar").classList.remove("open"); $("backdrop").classList.remove("show"); }
-$("hamburger").addEventListener("click", openDrawer);
+// ハンバーガーは上部バーごと作り直されるので、生成時に onclick を付けている
 $("backdrop").addEventListener("click", closeDrawer);
 
 // --------------------------------------------------------------------------
 // 起動
 // --------------------------------------------------------------------------
+/** 上部バーの状態を切らさないための取得。
+ *
+ *  各画面のタイマーは画面を切り替えるたびに止まるので、上部バーだけ
+ *  別で回す。サーバ側は同じ秒内の問い合わせをまとめるので、
+ *  ダッシュボードと二重に叩いてもゲームサーバへの負荷は増えない。
+ */
+function startStatusPolling() {
+  if (state.statusTimer) clearInterval(state.statusTimer);
+  const tick = async () => {
+    try { state.status = await api("/api/status"); }
+    catch (e) { /* 上部バーのために画面全体を壊さない */ }
+    buildTopbar();
+  };
+  tick();
+  state.statusTimer = setInterval(tick, 5000);
+}
+
 async function start() {
   try {
     state.config = await api("/api/config");
@@ -2477,6 +3608,7 @@ async function start() {
     toast("管理ツールの再起動が必要です（画面と API のバージョンが揃っていません）", "err");
   }
   setView(state.view || "dashboard");
+  startStatusPolling();
 }
 
 (async function main() {

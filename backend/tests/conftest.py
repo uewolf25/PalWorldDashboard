@@ -72,6 +72,10 @@ def settings(tmp_path: Path, ini_path: Path) -> Settings:
         schedule_store=tmp_path / "schedules.json",
         announce_store=tmp_path / "announcements.json",
         pending_store=tmp_path / "pending.json",
+        presence_store=tmp_path / "presence.json",
+        session_secret_file=tmp_path / "session-secret",
+        pal_save_dir_raw=str(tmp_path / "SaveGames"),
+        world_backup_dir=tmp_path / "world-backups",
         schedule_timezone="Asia/Tokyo",
         # ホストに systemctl があるかどうかでテスト結果が変わらないようにする。
         # 既定の systemd バックエンドのままだと、systemctl のある Linux（CI など）で

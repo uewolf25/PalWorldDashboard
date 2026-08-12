@@ -126,6 +126,17 @@ class Settings:
     )
     backup_keep: int = field(default_factory=lambda: _env_int("PAL_BACKUP_KEEP", 30))
 
+    # --- ワールドセーブ ---
+    # 空なら ini の場所から推測する（Saved/Config/... と Saved/SaveGames は兄弟）
+    pal_save_dir_raw: str = field(default_factory=lambda: _env("PAL_SAVE_DIR", ""))
+    world_backup_dir: Path = field(
+        default_factory=lambda: Path(
+            _env("PAL_WORLD_BACKUP_DIR", "/var/lib/dashboard-Pal/world-backups")
+        )
+    )
+    # ini と違って1つ数百MBになるので、既定は少なめにしておく
+    world_backup_keep: int = field(default_factory=lambda: _env_int("PAL_WORLD_BACKUP_KEEP", 5))
+
     # --- スケジューラ ---
     schedule_timezone: str = field(
         default_factory=lambda: _env("SCHEDULE_TIMEZONE", "Asia/Tokyo")
@@ -188,6 +199,16 @@ class Settings:
     )
     pending_limit: int = field(default_factory=lambda: _env_int("PAL_PENDING_LIMIT", 50))
 
+    # --- プレイヤーの入退室 ---
+    presence_store: Path = field(
+        default_factory=lambda: Path(
+            _env("PAL_PRESENCE_STORE", "/var/lib/dashboard-Pal/presence.json")
+        )
+    )
+    presence_history_limit: int = field(
+        default_factory=lambda: _env_int("PRESENCE_HISTORY_LIMIT", 500)
+    )
+
     # ゲームサーバへの問い合わせをまとめる秒数。
     # 画面のタブを何枚開いても、この間隔以上には問い合わせが増えない
     status_cache_sec: float = field(default_factory=lambda: _env_float("STATUS_CACHE_SEC", 1.0))
@@ -218,6 +239,22 @@ class Settings:
     @property
     def pal_base_url(self) -> str:
         return f"http://{self.pal_host}:{self.pal_port}"
+
+    @property
+    def pal_save_dir(self) -> Path:
+        """ワールドセーブの置き場。
+
+        PAL_SAVE_DIR が空なら ini の場所から推測する。標準的な配置では
+        `Pal/Saved/Config/LinuxServer/PalWorldSettings.ini` に対して
+        `Pal/Saved/SaveGames` が兄弟になる。推測が外れる構成もあるので、
+        そのときは PAL_SAVE_DIR で明示する。
+        """
+        if self.pal_save_dir_raw:
+            return Path(self.pal_save_dir_raw)
+        parents = self.pal_settings_ini.resolve().parents
+        if len(parents) >= 3 and parents[1].name == "Config":
+            return parents[2] / "SaveGames"
+        return self.pal_settings_ini.parent / "SaveGames"
 
     @property
     def notice_offsets(self) -> tuple[float, ...]:
@@ -263,6 +300,8 @@ class Settings:
             "auth_required": bool(self.app_password),
             # 画面が「閲覧専用で出すか、操作もさせるか」を決めるために使う
             "authenticated": authenticated,
+            # サイドバーに出すログイン名。ログイン前には教えない
+            "app_user": self.app_user if authenticated else "",
             "log_source": self.log_source,
             "dry_run": self.dry_run,
         }

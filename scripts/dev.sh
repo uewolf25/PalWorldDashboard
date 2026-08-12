@@ -46,6 +46,18 @@ export PAL_SERVICE_BACKEND=mock
 export PAL_MOCK_CONTROL_URL=http://127.0.0.1:8212
 export PAL_SETTINGS_INI="$DEV/PalWorldSettings.ini"
 export PAL_BACKUP_DIR="$DEV/backups"
+# ワールド画面のセーブ情報とバックアップを試せるようにする。
+# 中身は形だけのダミー（実際のセーブは無いので、サイズと世代管理の確認用）
+export PAL_SAVE_DIR="$DEV/SaveGames"
+export PAL_WORLD_BACKUP_DIR="$DEV/world-backups"
+export PAL_WORLD_BACKUP_KEEP=3
+export PAL_PRESENCE_STORE="$DEV/presence.json"
+if [ ! -d "$DEV/SaveGames" ]; then
+  mkdir -p "$DEV/SaveGames/0/DEVWORLD/Players"
+  head -c 262144 /dev/urandom > "$DEV/SaveGames/0/DEVWORLD/Level.sav"
+  head -c 16384  /dev/urandom > "$DEV/SaveGames/0/DEVWORLD/LocalData.sav"
+  head -c 32768  /dev/urandom > "$DEV/SaveGames/0/DEVWORLD/Players/00000001.sav"
+fi
 export PAL_SCHEDULE_STORE="$DEV/schedules.json"
 export PAL_PENDING_STORE="$DEV/pending-settings.json"
 export SCHEDULE_TIMEZONE=Asia/Tokyo
