@@ -5,6 +5,9 @@ Basic 認証だけだった頃の問題:
     ログインできていてもログ画面だけ繋がらない（移行前チェックリストの R-14）
   - ログアウトできない
 Cookie 方式にするとどちらも解決する。Basic 認証は API クライアント向けに残す。
+
+ログインは「操作の可否」だけを分ける。未ログインでも閲覧はできる。
+ただしパスワード系の値だけは、閲覧でも見せない。
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ from httpx import ASGITransport, AsyncClient
 from app.auth import (
     COOKIE_NAME,
     LoginThrottle,
-    check_basic_header,
     issue_token,
     load_or_create_secret,
     token_expiry,
@@ -30,12 +32,34 @@ PASSWORD = "s3cret-pass"
 LOGIN = {"username": USERNAME, "password": PASSWORD}
 
 
+async def operate(client):
+    """ログインを要求する操作の代表。ここが通るかどうかで認証状態を測る。"""
+    return await client.post("/api/announce", json={"message": "ログインが要る操作"})
+
+
 @pytest.fixture
 def secured(settings, tmp_path):
     settings.app_user = USERNAME
     settings.app_password = PASSWORD
     settings.session_secret_file = tmp_path / "session-secret"
     return settings
+
+
+ADMIN_PASSWORD = "kanri-himitsu"
+SERVER_PASSWORD = "sanka-himitsu"
+
+
+@pytest.fixture
+def ini_with_passwords(ini_path):
+    """パスワードが書かれた ini。伏字化の確認に使う。"""
+    ini_path.write_text(
+        "[/Script/Pal.PalGameWorldSettings]\n"
+        'OptionSettings=(Difficulty=None,ServerName="Test, Server",'
+        f'AdminPassword="{ADMIN_PASSWORD}",ServerPassword="{SERVER_PASSWORD}",'
+        "ServerPlayerMaxNum=32,bIsPvP=False)\n",
+        encoding="utf-8",
+    )
+    return ini_path
 
 
 @pytest.fixture
@@ -125,26 +149,63 @@ def test_unwritable_location_still_works(tmp_path):
 # ---- ログイン --------------------------------------------------------------
 
 
-async def test_endpoints_need_login(guest):
-    for path in ("/api/config", "/api/status", "/api/players", "/api/schedules"):
-        assert (await guest.get(path)).status_code == 401, path
+async def test_operations_need_login(guest):
+    """状態が変わるものはログインが要る。"""
+    for method, path, body in (
+        ("post", "/api/announce", {"message": "放送"}),
+        ("delete", "/api/announcements", None),
+        ("post", "/api/players/kick", {"userid": "steam_1", "message": "x"}),
+        ("post", "/api/players/ban", {"userid": "steam_1", "message": "x"}),
+        ("post", "/api/restart", {"reason": "x"}),
+        ("post", "/api/shutdown", {"reason": "x"}),
+        ("post", "/api/service/start", {"reason": "x"}),
+        ("post", "/api/save", None),
+        ("put", "/api/settings-ini", {"text": "x"}),
+        ("put", "/api/settings-ini/fields", {"values": {"ServerName": "x"}}),
+        ("post", "/api/settings-ini/restore", {"name": "x"}),
+        ("post", "/api/settings-ini/pending/apply", None),
+        ("delete", "/api/settings-ini/pending", None),
+        ("post", "/api/schedules", {"kind": "cron", "spec": "0 5 * * *"}),
+        ("delete", "/api/schedules/whatever", None),
+    ):
+        call = getattr(guest, method)
+        resp = await call(path, json=body) if body is not None else await call(path)
+        assert resp.status_code == 401, f"{method} {path}"
 
 
-async def test_login_then_access(guest):
+async def test_viewing_does_not_need_login(guest):
+    """未ログインでも画面は見られる（Issue #15 の追加実装）。"""
+    for path in (
+        "/api/config",
+        "/api/status",
+        "/api/history",
+        "/api/players",
+        "/api/world",
+        "/api/announcements",
+        "/api/settings-ini",
+        "/api/settings-ini/fields",
+        "/api/settings-ini/pending",
+        "/api/schedules",
+        "/api/restart",
+        "/api/logs",
+    ):
+        assert (await guest.get(path)).status_code == 200, path
+
+
+async def test_login_then_operate(guest):
     resp = await guest.post("/api/login", json=LOGIN)
     assert resp.status_code == 200
     assert COOKIE_NAME in resp.cookies
 
-    # 以降は Cookie だけで通る
-    assert (await guest.get("/api/config")).status_code == 200
-    assert (await guest.get("/api/status")).status_code == 200
+    # 以降は Cookie だけで操作できる
+    assert (await operate(guest)).status_code == 200
 
 
 async def test_wrong_password_is_rejected(guest):
     resp = await guest.post("/api/login", json={"username": USERNAME, "password": "nope"})
     assert resp.status_code == 401
     assert COOKIE_NAME not in resp.cookies
-    assert (await guest.get("/api/config")).status_code == 401
+    assert (await operate(guest)).status_code == 401
 
 
 async def test_login_cookie_is_httponly_and_samesite(guest):
@@ -159,10 +220,10 @@ async def test_login_cookie_is_httponly_and_samesite(guest):
 
 async def test_logout_clears_the_session(guest):
     await guest.post("/api/login", json=LOGIN)
-    assert (await guest.get("/api/config")).status_code == 200
+    assert (await operate(guest)).status_code == 200
 
     assert (await guest.post("/api/logout")).status_code == 200
-    assert (await guest.get("/api/config")).status_code == 401
+    assert (await operate(guest)).status_code == 401
 
 
 async def test_auth_status_is_reachable_without_logging_in(guest):
@@ -176,7 +237,7 @@ async def test_auth_status_is_reachable_without_logging_in(guest):
 
 async def test_forged_cookie_is_rejected(guest):
     guest.cookies.set(COOKIE_NAME, issue_token(b"attacker-secret", 600))
-    assert (await guest.get("/api/config")).status_code == 401
+    assert (await operate(guest)).status_code == 401
 
 
 async def test_expired_cookie_is_rejected(guest, secured):
@@ -185,12 +246,12 @@ async def test_expired_cookie_is_rejected(guest, secured):
                      notifier=guest.app.state.notifier, start_background=False)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://manager") as c:
         await c.post("/api/login", json=LOGIN)
-        assert (await c.get("/api/config")).status_code == 401
+        assert (await operate(c)).status_code == 401
 
 
 async def test_401_does_not_trigger_the_browser_dialog(guest):
     """自前のログイン画面と Basic 認証ダイアログが二重に出ないこと。"""
-    resp = await guest.get("/api/config")
+    resp = await operate(guest)
     assert resp.status_code == 401
     assert "www-authenticate" not in {k.lower() for k in resp.headers}
 
@@ -204,7 +265,7 @@ async def test_basic_auth_still_works_for_api_clients(secured, pal_client, notif
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://manager", auth=(USERNAME, PASSWORD)
     ) as c:
-        assert (await c.get("/api/config")).status_code == 200
+        assert (await operate(c)).status_code == 200
 
 
 async def test_basic_auth_with_a_wrong_password_fails(secured, pal_client, notifier):
@@ -212,12 +273,19 @@ async def test_basic_auth_with_a_wrong_password_fails(secured, pal_client, notif
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://manager", auth=(USERNAME, "nope")
     ) as c:
-        assert (await c.get("/api/config")).status_code == 401
+        assert (await operate(c)).status_code == 401
 
 
-@pytest.mark.parametrize("header", ["", "Bearer x", "Basic !!!notbase64", "Basic " + "eA=="])
-def test_check_basic_header_rejects_junk(header):
-    assert check_basic_header(header, "admin", "p") is False
+async def test_basic_auth_also_reveals_the_masked_values(
+    secured, pal_client, notifier, ini_with_passwords
+):
+    """伏字は未ログインの相手にだけ。API クライアントには素の値を返す。"""
+    app = create_app(secured, pal_client=pal_client, notifier=notifier, start_background=False)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://manager", auth=(USERNAME, PASSWORD)
+    ) as c:
+        body = (await c.get("/api/settings-ini")).json()
+        assert body["options"]["AdminPassword"] == f'"{ADMIN_PASSWORD}"'
 
 
 # ---- 認証なしの構成 --------------------------------------------------------
@@ -333,31 +401,15 @@ def test_websocket_accepts_the_session_cookie(secured, pal_client, notifier):
             assert _expect_line(ws, "ログの1行")
 
 
-def test_websocket_is_refused_without_a_session(secured, pal_client, notifier):
-    from fastapi.testclient import TestClient
-    from starlette.websockets import WebSocketDisconnect as WSDisconnect
-
-    app = create_app(secured, pal_client=pal_client, notifier=notifier, start_background=False)
-    with TestClient(app) as client:
-        with pytest.raises(WSDisconnect):
-            with client.websocket_connect("/ws/logs") as ws:
-                ws.receive_json()
-
-
-def test_websocket_still_accepts_basic_auth(secured, pal_client, notifier):
-    """スクリプトからの接続用に Basic 認証も残す。"""
-    import base64
-
+def test_websocket_is_open_without_a_session(secured, pal_client, notifier):
+    """ログ画面は未ログインでも閲覧できる（Issue #15 の追加実装）。"""
     from fastapi.testclient import TestClient
 
     app = create_app(secured, pal_client=pal_client, notifier=notifier, start_background=False)
-    token = base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
     with TestClient(app) as client:
-        with client.websocket_connect(
-            "/ws/logs", headers={"Authorization": f"Basic {token}"}
-        ) as ws:
-            app.state.broker.publish("basic でも届く", source="app")
-            assert _expect_line(ws, "basic でも届く")
+        with client.websocket_connect("/ws/logs") as ws:
+            app.state.broker.publish("未ログインでも届く", source="app")
+            assert _expect_line(ws, "未ログインでも届く")
 
 
 def test_websocket_is_open_when_no_password_is_set(settings, pal_client, notifier):
@@ -376,7 +428,7 @@ def test_websocket_is_open_when_no_password_is_set(settings, pal_client, notifie
 async def test_wrong_username_is_rejected(guest):
     resp = await guest.post("/api/login", json={"username": "someone", "password": PASSWORD})
     assert resp.status_code == 401
-    assert (await guest.get("/api/config")).status_code == 401
+    assert (await operate(guest)).status_code == 401
 
 
 async def test_error_does_not_reveal_which_field_was_wrong(guest):
@@ -426,3 +478,117 @@ async def test_wrong_username_also_counts_toward_the_lockout(secured, pal_client
         assert (await c.post(
             "/api/login", json={"username": "c", "password": "x"}
         )).status_code == 429
+
+
+# ---- 未ログインにはパスワードを見せない --------------------------------------
+#
+# 閲覧は許すが、サーバのパスワードだけは値も渡さない。
+# 漏れれば、閲覧しかできないはずの相手がゲームに入れてしまう。
+
+
+MASK = "********"
+
+
+async def test_ini_text_hides_passwords_from_guests(guest, ini_with_passwords):
+    """全文編集は ini をそのまま見せる画面なので、ここが一番危ない。"""
+    body = (await guest.get("/api/settings-ini")).json()
+
+    assert ADMIN_PASSWORD not in body["text"]
+    assert SERVER_PASSWORD not in body["text"]
+    assert f'AdminPassword="{MASK}"' in body["text"]
+    # パスワード以外は伏せない
+    assert 'ServerName="Test, Server"' in body["text"]
+
+
+async def test_ini_options_hide_passwords_from_guests(guest, ini_with_passwords):
+    """options は ini の書式（引用符込み）のまま持ち回る。"""
+    options = (await guest.get("/api/settings-ini")).json()["options"]
+    assert options["AdminPassword"] == f'"{MASK}"'
+    assert options["ServerPassword"] == f'"{MASK}"'
+    assert options["ServerName"] == '"Test, Server"'
+
+
+async def test_ini_fields_hide_passwords_from_guests(guest, ini_with_passwords):
+    """フォーム表示側。value と raw の両方を伏せる。"""
+    body = (await guest.get("/api/settings-ini/fields")).json()
+    fields = {f["name"]: f for cat in body["categories"] for f in cat["fields"]}
+
+    assert fields["AdminPassword"]["value"] == MASK
+    assert fields["AdminPassword"]["raw"] == f'"{MASK}"'
+    assert fields["ServerPassword"]["value"] == MASK
+    assert ADMIN_PASSWORD not in str(body)
+
+
+async def test_ini_is_visible_to_a_logged_in_user(guest, ini_with_passwords):
+    await guest.post("/api/login", json=LOGIN)
+    body = (await guest.get("/api/settings-ini")).json()
+    assert body["options"]["AdminPassword"] == f'"{ADMIN_PASSWORD}"'
+    assert ADMIN_PASSWORD in body["text"]
+
+
+async def test_server_settings_hide_passwords_from_guests(guest, mock_state):
+    """ゲームサーバが返す設定にもパスワードが入っている。"""
+    mock_state.settings_overrides.update(
+        {"AdminPassword": ADMIN_PASSWORD, "ServerPassword": SERVER_PASSWORD}
+    )
+    body = (await guest.get("/api/settings")).json()
+
+    assert body["AdminPassword"] == MASK
+    assert body["ServerPassword"] == MASK
+    assert body["ServerName"] == "Mock Palworld Server"
+
+
+async def test_pending_changes_hide_passwords_from_guests(guest, ini_with_passwords):
+    """反映待ちの中身にも、これから設定するパスワードが入る。"""
+    await guest.post("/api/login", json=LOGIN)
+    resp = await guest.put(
+        "/api/settings-ini/fields",
+        json={"values": {"ServerPassword": "atarashii-pass"}, "when": "next_stop"},
+    )
+    assert resp.status_code == 200, resp.text
+    await guest.post("/api/logout")
+
+    body = (await guest.get("/api/settings-ini/pending")).json()
+    assert body["pending"][0]["updates"]["ServerPassword"] == f'"{MASK}"'
+    assert "atarashii-pass" not in str(body)
+
+
+async def test_config_hides_secrets_from_guests(secured, pal_client, notifier):
+    """未ログインには前後4文字も見せない。"""
+    secured.discord_webhook_url = "https://discord.com/api/webhooks/12345/abcdefghijklmnop"
+    app = create_app(secured, pal_client=pal_client, notifier=notifier, start_background=False)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://manager") as c:
+        body = (await c.get("/api/config")).json()
+        assert body["discord_webhook_url"] == MASK
+        assert body["pal_admin_password"] == MASK
+        assert body["authenticated"] is False
+
+        await c.post("/api/login", json=LOGIN)
+        body = (await c.get("/api/config")).json()
+        # ログイン後は従来どおり前後を残した伏字
+        assert body["discord_webhook_url"].startswith("http")
+        assert body["authenticated"] is True
+
+
+async def test_unknown_password_fields_are_hidden_too(guest, ini_path):
+    """スキーマの更新が追いつかない項目も名前で拾う。"""
+    ini_path.write_text(
+        "[/Script/Pal.PalGameWorldSettings]\n"
+        'OptionSettings=(Difficulty=None,RCONPassword="mirai-no-koumoku",bIsPvP=False)\n',
+        encoding="utf-8",
+    )
+    body = (await guest.get("/api/settings-ini")).json()
+    assert "mirai-no-koumoku" not in body["text"]
+    assert body["options"]["RCONPassword"] == f'"{MASK}"'
+
+
+async def test_empty_passwords_stay_empty(guest, ini_path):
+    """未設定を伏字にすると「設定済み」と誤読され、設定漏れに気づけない。"""
+    ini_path.write_text(
+        "[/Script/Pal.PalGameWorldSettings]\n"
+        'OptionSettings=(Difficulty=None,AdminPassword="",bIsPvP=False)\n',
+        encoding="utf-8",
+    )
+    body = (await guest.get("/api/settings-ini")).json()
+    assert body["options"]["AdminPassword"] == '""'
+    assert 'AdminPassword=""' in body["text"]

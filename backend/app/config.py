@@ -232,13 +232,22 @@ class Settings:
                 continue
         return tuple(sorted(out, reverse=True)) or (300.0, 60.0, 30.0)
 
-    def public_dict(self) -> dict:
-        """UI に返す設定。秘密情報は伏字化する。"""
+    def public_dict(self, authenticated: bool = True) -> dict:
+        """UI に返す設定。秘密情報は伏字化する。
+
+        未ログインの相手には mask_secret すら使わない。前後4文字を残す形式なので、
+        Webhook URL のように構造が決まっているものだと当たりを付けられてしまう。
+        """
+        def secret(value: str) -> str:
+            if not value:
+                return ""
+            return mask_secret(value) if authenticated else "********"
+
         return {
             "env": self.env,
             "pal_base_url": self.pal_base_url,
-            "pal_admin_user": self.pal_admin_user,
-            "pal_admin_password": mask_secret(self.pal_admin_password),
+            "pal_admin_user": self.pal_admin_user if authenticated else "",
+            "pal_admin_password": secret(self.pal_admin_password),
             "pal_service_name": self.pal_service_name,
             "pal_service_backend": self.pal_service_backend,
             "pal_settings_ini": str(self.pal_settings_ini),
@@ -249,9 +258,11 @@ class Settings:
             "monitor_interval": self.monitor_interval,
             "mem_warn_percent": self.mem_warn_percent,
             "mem_crit_percent": self.mem_crit_percent,
-            "discord_webhook_url": mask_secret(self.discord_webhook_url),
-            "discord_alert_webhook_url": mask_secret(self.discord_alert_webhook_url),
+            "discord_webhook_url": secret(self.discord_webhook_url),
+            "discord_alert_webhook_url": secret(self.discord_alert_webhook_url),
             "auth_required": bool(self.app_password),
+            # 画面が「閲覧専用で出すか、操作もさせるか」を決めるために使う
+            "authenticated": authenticated,
             "log_source": self.log_source,
             "dry_run": self.dry_run,
         }

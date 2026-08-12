@@ -20,7 +20,6 @@ from .announce import AnnouncementLog, Announcer
 from .auth import (
     COOKIE_NAME,
     LoginThrottle,
-    check_basic_header,
     issue_token,
     load_or_create_secret,
     token_expiry,
@@ -49,6 +48,8 @@ from .settings_schema import (
     build_updates,
     describe,
     discovered_fields,
+    mask_ini_text,
+    mask_values,
     missing_fields,
 )
 
@@ -346,22 +347,33 @@ def create_app(
             creds.password, cfg.app_password
         )
 
-    def require_auth(
+    def is_authenticated(
         request: Request, creds: HTTPBasicCredentials | None = Depends(_security)
-    ) -> None:
-        """ログイン済みのセッション、または Basic 認証を通す。
+    ) -> bool:
+        """ログイン済みのセッション、または Basic 認証が通っているか。
 
         ブラウザはログイン画面で Cookie を得る。curl やスクリプトからは
         Basic 認証の方が扱いやすいので、そちらも受け付ける。
+
+        認証を掛けていない構成（APP_PASSWORD 未設定）では常に True。
         """
         if not cfg.app_password:
-            return
-        if _session_ok(request) or _basic_ok(creds):
+            return True
+        return _session_ok(request) or _basic_ok(creds)
+
+    def require_auth(authenticated: bool = Depends(is_authenticated)) -> None:
+        """操作系のエンドポイントに掛ける。
+
+        未ログインでも閲覧はできる（Issue #15）。状態が変わるものだけを止める。
+        閲覧系のうちパスワードを含むものは、止めるのではなく値を伏せる。
+        """
+        if authenticated:
             return
         # WWW-Authenticate を返すとブラウザが標準ダイアログを出してしまい、
         # 自前のログイン画面と二重になる。ここでは付けない
-        raise HTTPException(401, "ログインが必要です")
+        raise HTTPException(401, "この操作にはログインが必要です")
 
+    # 操作系に付ける。閲覧系には付けない
     auth = [Depends(require_auth)]
 
     async def game_server_running() -> bool:
@@ -469,9 +481,9 @@ def create_app(
 
     # ---- 基本情報 ------------------------------------------------------
 
-    @app.get("/api/config", dependencies=auth)
-    async def get_config() -> dict[str, Any]:
-        return cfg.public_dict()
+    @app.get("/api/config")
+    async def get_config(authenticated: bool = Depends(is_authenticated)) -> dict[str, Any]:
+        return cfg.public_dict(authenticated)
 
     async def _fetch_status() -> dict[str, Any]:
         """ゲームサーバへの問い合わせ部分だけ。キャッシュの対象。"""
@@ -481,7 +493,7 @@ def create_app(
         except PalApiError as exc:
             return {"online": False, "error": str(exc), "info": {}, "metrics": {}}
 
-    @app.get("/api/status", dependencies=auth)
+    @app.get("/api/status")
     async def get_status() -> dict[str, Any]:
         """ダッシュボードが1秒ごとに叩く。ゲームサーバが落ちていても 200 を返す。
 
@@ -504,7 +516,7 @@ def create_app(
             "log_subscribers": broker.subscriber_count,
         }
 
-    @app.get("/api/history", dependencies=auth)
+    @app.get("/api/history")
     async def get_history(minutes: int = Query(60, ge=1, le=1440)) -> dict[str, Any]:
         return {
             "interval": cfg.monitor_interval,
@@ -518,7 +530,7 @@ def create_app(
 
     # ---- プレイヤー ----------------------------------------------------
 
-    @app.get("/api/players", dependencies=auth)
+    @app.get("/api/players")
     async def get_players() -> dict[str, Any]:
         # プレイヤータブとワールドタブが同時に見るので、ここも合流させる
         players = await players_cache.get(pal.players)
@@ -547,7 +559,7 @@ def create_app(
         await pal.unban(body.userid)
         return {"result": "ok", "userid": body.userid}
 
-    @app.get("/api/world", dependencies=auth)
+    @app.get("/api/world")
     async def get_world() -> dict[str, Any]:
         """マップ表示用。座標が取れるのは接続中プレイヤーのみ。
 
@@ -591,7 +603,7 @@ def create_app(
         )
         return {"result": "ok", "record": record.as_dict()}
 
-    @app.get("/api/announcements", dependencies=auth)
+    @app.get("/api/announcements")
     async def list_announcements(
         limit: int = Query(100, ge=1, le=500),
         source: str | None = Query(None),
@@ -607,11 +619,14 @@ def create_app(
         await pal.save()
         return {"result": "ok"}
 
-    @app.get("/api/settings", dependencies=auth)
-    async def get_server_settings() -> dict[str, Any]:
-        return await pal.settings()
+    @app.get("/api/settings")
+    async def get_server_settings(
+        authenticated: bool = Depends(is_authenticated),
+    ) -> dict[str, Any]:
+        settings = await pal.settings()
+        return settings if authenticated else mask_values(settings)
 
-    @app.get("/api/restart", dependencies=auth)
+    @app.get("/api/restart")
     async def get_restart_status() -> dict[str, Any]:
         return restart_manager.status.as_dict()
 
@@ -676,8 +691,8 @@ def create_app(
 
     # ---- PalWorldSettings.ini ------------------------------------------
 
-    @app.get("/api/settings-ini", dependencies=auth)
-    async def get_ini() -> dict[str, Any]:
+    @app.get("/api/settings-ini")
+    async def get_ini(authenticated: bool = Depends(is_authenticated)) -> dict[str, Any]:
         if not ini_store.exists():
             return {
                 "exists": False,
@@ -687,11 +702,16 @@ def create_app(
                 "backups": [],
             }
         text = ini_store.read_text()
+        options = ini_store.read_options()
+        if not authenticated:
+            # 全文編集は ini をそのまま見せる画面なので、ここで伏せないと素通しになる
+            text = mask_ini_text(text)
+            options = mask_values(options)
         return {
             "exists": True,
             "path": str(cfg.pal_settings_ini),
             "text": text,
-            "options": ini_store.read_options(),
+            "options": options,
             "backups": [
                 {"name": b.name, "size": b.size, "created_at": b.created_at}
                 for b in ini_store.list_backups()
@@ -723,8 +743,8 @@ def create_app(
         )
         return {"result": "ok", "backup": backup.name, "start_required": True}
 
-    @app.get("/api/settings-ini/fields", dependencies=auth)
-    async def get_ini_fields() -> dict[str, Any]:
+    @app.get("/api/settings-ini/fields")
+    async def get_ini_fields(authenticated: bool = Depends(is_authenticated)) -> dict[str, Any]:
         """ini を項目ごとのフォーム定義として返す。
 
         返すのは実際にファイルへ書かれているキーだけ。
@@ -746,6 +766,11 @@ def create_app(
             server_settings = await pal.settings()
         except PalApiError:
             pass
+
+        if not authenticated:
+            # describe() に渡す前に伏せる。value と raw の両方に効かせるため
+            options = mask_values(options)
+            server_settings = mask_values(server_settings)
 
         return {
             "exists": True,
@@ -865,16 +890,19 @@ def create_app(
 
     # ---- 保留中の設定変更 ------------------------------------------------
 
-    @app.get("/api/settings-ini/pending", dependencies=auth)
-    async def list_pending() -> dict[str, Any]:
+    @app.get("/api/settings-ini/pending")
+    async def list_pending(authenticated: bool = Depends(is_authenticated)) -> dict[str, Any]:
         """反映待ちの設定変更。どの予約で反映されるかも併せて返す。"""
         schedules = {s["id"]: s for s in scheduler.list()}
         items = []
         for item in pending.list():
             sched = schedules.get(item["schedule_id"]) if item["schedule_id"] else None
+            # 反映待ちの中身にも新しいパスワードが入りうる
+            updates = item["updates"] if authenticated else mask_values(item["updates"])
             items.append(
                 {
                     **item,
+                    "updates": updates,
                     "target_label": (
                         f"{sched['label'] or sched['spec']}（{sched['action_label']}）"
                         if sched else "次にサーバが停止するとき"
@@ -919,7 +947,7 @@ def create_app(
 
     # ---- スケジュール --------------------------------------------------
 
-    @app.get("/api/schedules", dependencies=auth)
+    @app.get("/api/schedules")
     async def list_schedules() -> dict[str, Any]:
         schedules = scheduler.list()
         # この予約で反映される設定変更の件数を添える
@@ -967,23 +995,14 @@ def create_app(
 
     # ---- ログ ----------------------------------------------------------
 
-    @app.get("/api/logs", dependencies=auth)
+    @app.get("/api/logs")
     async def get_logs() -> dict[str, Any]:
         return {"lines": broker.backlog()}
 
     @app.websocket("/ws/logs")
     async def ws_logs(websocket: WebSocket) -> None:
-        if cfg.app_password:
-            # Cookie は同一オリジンの WebSocket ハンドシェイクにも送られる。
-            # Basic 認証だとブラウザがヘッダを付けないことがあり、
-            # ログイン画面が動いていてもログだけ繋がらなかった
-            ok = verify_token(session_secret, websocket.cookies.get(COOKIE_NAME, ""))
-            if not ok:
-                header = websocket.headers.get("authorization", "")
-                ok = check_basic_header(header, cfg.app_user, cfg.app_password)
-            if not ok:
-                await websocket.close(code=1008)
-                return
+        # ログ画面は未ログインでも閲覧できる（Issue #15）。
+        # 認証の有無で流す内容は変えていない。ログは配信するだけで何も変えられない
         await websocket.accept()
         try:
             async for record in broker.subscribe():

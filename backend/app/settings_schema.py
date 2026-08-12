@@ -206,6 +206,76 @@ FIELDS: list[FieldSpec] = [
 
 FIELDS_BY_NAME: dict[str, FieldSpec] = {f.name: f for f in FIELDS}
 
+
+# --------------------------------------------------------------------------
+# 未ログインの閲覧者に対する伏字化
+# --------------------------------------------------------------------------
+# 未ログインでも画面は見られるようにしたが、パスワードだけは値も見せない。
+# サーバのパスワードが漏れれば、閲覧しかできないはずの相手がゲームに入れてしまう。
+
+MASK = "********"
+
+SECRET_FIELDS: frozenset[str] = frozenset(f.name for f in FIELDS if f.secret)
+
+
+def is_secret_field(name: str) -> bool:
+    """伏せるべき項目か。
+
+    スキーマに定義が無いキーも名前で拾う。Palworld はアップデートで項目が
+    増えるので、スキーマの更新が追いつかない間に漏らしたくない。
+    """
+    return name in SECRET_FIELDS or "password" in name.lower()
+
+
+def _mask_one(value: Any) -> Any:
+    """1つの値を伏せる。
+
+    ini の値は `"..."` の引用符ごと持ち回っているので、引用符の有無は元に合わせる。
+    ここで形を変えると、伏字がそのまま書き戻されたときに ini が壊れる。
+
+    空の項目はそのまま返す。伏字にすると「パスワードが設定されている」と
+    誤読され、設定漏れに気づけなくなるため。
+    """
+    if not isinstance(value, str):
+        # REST API 由来の値。文字列以外がパスワードに入ることはまず無い
+        return None if value is None else MASK
+    quoted = len(value) >= 2 and value.startswith('"') and value.endswith('"')
+    if not (value[1:-1] if quoted else value):
+        return value
+    return f'"{MASK}"' if quoted else MASK
+
+
+def mask_values(values: dict[str, Any]) -> dict[str, Any]:
+    """パスワード系の値を伏字に置き換える。"""
+    return {
+        key: (_mask_one(value) if is_secret_field(key) else value)
+        for key, value in values.items()
+    }
+
+
+# `Key=Value` と `Key="Value"` の両方に当てる。値はカンマ・閉じ括弧・改行まで
+_ASSIGNMENT_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)("(?:[^"\\]|\\.)*"|[^,)\r\n]*)')
+
+
+def mask_ini_text(text: str) -> str:
+    """ini 全文のうち、パスワード系の値だけを伏字にする。
+
+    ini は OptionSettings=(...) に全項目が1行で詰まっている。行単位では
+    切り出せないので、代入の形をそのまま拾って値だけ差し替える。
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        name, sep, raw = match.group(1), match.group(2), match.group(3)
+        if not is_secret_field(name):
+            return match.group(0)
+        quoted = raw.startswith('"')
+        inner = raw[1:-1] if quoted and len(raw) >= 2 else raw
+        if not inner:
+            return match.group(0)
+        return f'{name}{sep}"{MASK}"' if quoted else f"{name}{sep}{MASK}"
+
+    return _ASSIGNMENT_RE.sub(replace, text)
+
 # 公式の DefaultPalWorldSettings.ini に載っている既定値。
 # ファイルに書かれていない項目を追加するとき、初期値としてこれを提示する。
 #

@@ -137,9 +137,20 @@ async def test_config_masks_secrets(settings, pal_client, notifier):
 
 
 @pytest.mark.parametrize("path", ["/api/status", "/api/players", "/api/config"])
-async def test_basic_auth_is_enforced_when_password_set(
-    settings, pal_client, notifier, path
-):
+async def test_viewing_stays_open_when_password_set(settings, pal_client, notifier, path):
+    """パスワードを設定しても閲覧は誰でもできる（Issue #15 の追加実装）。"""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import create_app
+
+    settings.app_password = "s3cret"
+    app = create_app(settings, pal_client=pal_client, notifier=notifier, start_background=False)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://manager") as c:
+        assert (await c.get(path)).status_code == 200
+
+
+async def test_basic_auth_is_enforced_for_operations(settings, pal_client, notifier):
     from httpx import ASGITransport, AsyncClient
 
     from app.main import create_app
@@ -147,11 +158,12 @@ async def test_basic_auth_is_enforced_when_password_set(
     settings.app_password = "s3cret"
     app = create_app(settings, pal_client=pal_client, notifier=notifier, start_background=False)
     transport = ASGITransport(app=app)
+    body = {"message": "操作にはログインが要る"}
 
     async with AsyncClient(transport=transport, base_url="http://manager") as c:
-        assert (await c.get(path)).status_code == 401
+        assert (await c.post("/api/announce", json=body)).status_code == 401
 
     async with AsyncClient(
         transport=transport, base_url="http://manager", auth=("admin", "s3cret")
     ) as c:
-        assert (await c.get(path)).status_code == 200
+        assert (await c.post("/api/announce", json=body)).status_code == 200

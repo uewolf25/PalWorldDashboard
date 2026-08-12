@@ -18,7 +18,6 @@ WebSocket ハンドシェイクにも送られるので、上の1点目も解決
 
 from __future__ import annotations
 
-import base64
 import hmac
 import logging
 import os
@@ -174,24 +173,3 @@ class LoginThrottle:
     def record_success(self, key: str) -> None:
         self._failures.pop(key, None)
         self._locked_until.pop(key, None)
-
-
-# --------------------------------------------------------------------------
-# Basic 認証（API クライアント向けに残す）
-# --------------------------------------------------------------------------
-
-
-def check_basic_header(header: str, user: str, password: str) -> bool:
-    """Authorization ヘッダの Basic 認証を検証する。
-
-    ブラウザはログイン画面と Cookie を使うが、curl やスクリプトからは
-    Basic 認証の方が扱いやすいので残しておく。
-    """
-    if not header.lower().startswith("basic "):
-        return False
-    try:
-        decoded = base64.b64decode(header.split(" ", 1)[1]).decode()
-        got_user, _, got_pass = decoded.partition(":")
-    except (ValueError, UnicodeDecodeError):
-        return False
-    return hmac.compare_digest(got_user, user) and hmac.compare_digest(got_pass, password)
