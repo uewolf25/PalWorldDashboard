@@ -32,6 +32,7 @@ from .monitor import Monitor
 from .notify import DiscordNotifier
 from .palapi import PalApiError, PalworldClient
 from .pending import ApplyResult, PendingChangeStore
+from .presence import PresenceTracker
 from .restart import (
     RestartDebounced,
     RestartInProgress,
@@ -224,6 +225,17 @@ def create_app(
     announce_log = AnnouncementLog(cfg.announce_store, limit=cfg.announce_history_limit)
     announcer = Announcer(pal, notify, announce_log)
     pending = PendingChangeStore(cfg.pending_store, limit=cfg.pending_limit)
+    presence = PresenceTracker(cfg.presence_store, limit=cfg.presence_history_limit)
+
+    async def _fetch_players() -> list[dict[str, Any]]:
+        """プレイヤー一覧の取得口。ここを通れば必ず入退室が記録される。
+
+        REST API に入退室イベントは無いので、スナップショットの差分で作るしかない。
+        取得口を1つに絞っておかないと、経路によって記録されたりされなかったりする。
+        """
+        players = await pal.players()
+        presence.observe(players)
+        return players
 
     async def apply_pending_changes(schedule_id: str | None) -> ApplyResult:
         """サーバ停止中に呼ばれ、保留していた設定変更を ini へ書き込む。
@@ -268,6 +280,19 @@ def create_app(
     )
     # シーケンス進行中も同様に抑止する（猶予の計算に取りこぼしがあっても効くように）
     monitor.set_maintenance_probe(lambda: restart_manager.in_progress)
+
+    async def _observe_presence() -> None:
+        """監視ループから入退室を観測する。
+
+        画面のポーリング任せにすると、誰も開いていない間の出入りが丸ごと
+        抜ける。サーバが落ちているときは取れないので黙って諦める。
+        """
+        try:
+            await players_cache.get(_fetch_players)
+        except PalApiError:
+            pass
+
+    monitor.set_after_sample(_observe_presence)
     scheduler = ServerScheduler(
         restart_manager,
         service,
@@ -533,8 +558,28 @@ def create_app(
     @app.get("/api/players")
     async def get_players() -> dict[str, Any]:
         # プレイヤータブとワールドタブが同時に見るので、ここも合流させる
-        players = await players_cache.get(pal.players)
-        return {"players": players, "count": len(players)}
+        players = await players_cache.get(_fetch_players)
+        return {
+            "players": presence.annotate(players),
+            "count": len(players),
+        }
+
+    @app.get("/api/players/events")
+    async def get_presence_events(
+        limit: int = Query(50, ge=1, le=500),
+        kind: str | None = Query(None, pattern="^(join|leave)$"),
+    ) -> dict[str, Any]:
+        """入退室の履歴。
+
+        REST API に入退室イベントは無いため、一覧のスナップショットの差分から
+        組み立てている。取得の間隔より短い出入りは記録されない。
+        """
+        return {
+            "events": presence.list(limit=limit, kind=kind),
+            "total": len(presence),
+            # 画面で「取りこぼしがありうる」ことを説明するために返す
+            "poll_interval": cfg.monitor_interval,
+        }
 
     @app.post("/api/players/kick", dependencies=auth)
     async def kick_player(body: PlayerActionBody) -> dict[str, Any]:
@@ -542,6 +587,7 @@ def create_app(
             return {"result": "skipped", "reason": "dry_run", "userid": body.userid}
         await pal.kick(body.userid, body.message)
         players_cache.invalidate()   # 消えた直後に古い一覧を見せない
+        presence.forget(body.userid)  # 次の観測を待たずに退出として確定させる
         await notify.send("プレイヤーをキックしました", f"{body.userid}\n{body.message}", "warn")
         return {"result": "ok", "userid": body.userid}
 
@@ -551,6 +597,7 @@ def create_app(
             return {"result": "skipped", "reason": "dry_run", "userid": body.userid}
         await pal.ban(body.userid, body.message)
         players_cache.invalidate()
+        presence.forget(body.userid)
         await notify.send("プレイヤーをBANしました", f"{body.userid}\n{body.message}", "warn")
         return {"result": "ok", "userid": body.userid}
 
@@ -566,7 +613,7 @@ def create_app(
         REST API はパル/NPC の位置を公開していないため、
         ここで返すのはプレイヤーの座標と異常検知のみ。
         """
-        players = await players_cache.get(pal.players)
+        players = await players_cache.get(_fetch_players)
         points = []
         anomalies = []
         for p in players:

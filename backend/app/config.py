@@ -188,6 +188,16 @@ class Settings:
     )
     pending_limit: int = field(default_factory=lambda: _env_int("PAL_PENDING_LIMIT", 50))
 
+    # --- プレイヤーの入退室 ---
+    presence_store: Path = field(
+        default_factory=lambda: Path(
+            _env("PAL_PRESENCE_STORE", "/var/lib/dashboard-Pal/presence.json")
+        )
+    )
+    presence_history_limit: int = field(
+        default_factory=lambda: _env_int("PRESENCE_HISTORY_LIMIT", 500)
+    )
+
     # ゲームサーバへの問い合わせをまとめる秒数。
     # 画面のタブを何枚開いても、この間隔以上には問い合わせが増えない
     status_cache_sec: float = field(default_factory=lambda: _env_float("STATUS_CACHE_SEC", 1.0))

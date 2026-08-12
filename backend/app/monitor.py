@@ -11,7 +11,7 @@ import asyncio
 import logging
 import time
 from collections import deque
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 import psutil
 
@@ -51,6 +51,8 @@ class Monitor:
         self._suppress_until: float = 0.0
         # 再起動シーケンスなどが進行中かを尋ねるフック
         self._maintenance: Callable[[], bool] | None = None
+        # サンプルのたびに呼ぶ追加処理（入退室の観測など）
+        self._after_sample: Callable[[], Awaitable[None]] | None = None
 
     # ---- サンプリング --------------------------------------------------
 
@@ -95,6 +97,13 @@ class Monitor:
         self.history.append(record)
         self.last_sample = record
         await self._check_alerts(record)
+
+        if self._after_sample is not None:
+            # 入退室の観測など。ここで失敗しても監視は続ける
+            try:
+                await self._after_sample()
+            except Exception:
+                logger.exception("サンプル後の処理で想定外のエラー")
         return record
 
     # ---- メンテナンス中の抑止 ------------------------------------------
@@ -102,6 +111,14 @@ class Monitor:
     def set_maintenance_probe(self, probe: Callable[[], bool]) -> None:
         """再起動シーケンスなどが進行中かを尋ねるフックを登録する。"""
         self._maintenance = probe
+
+    def set_after_sample(self, hook: Callable[[], Awaitable[None]]) -> None:
+        """サンプルのたびに呼ぶ処理を登録する。
+
+        入退室の観測に使う。画面を開いている人がいなくても記録が続くよう、
+        UI のポーリングではなくこのループから叩く。
+        """
+        self._after_sample = hook
 
     def suppress_downtime_alerts(self, seconds: float) -> None:
         """この先 seconds 秒は「応答なし」を通知しない。
