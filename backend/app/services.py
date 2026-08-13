@@ -25,6 +25,10 @@ NOT_RUNNING_STATES = frozenset(
     {"inactive", "failed", "activating", "deactivating", "unknown"}
 )
 
+# 状態を変えない操作。画面のポーリングから繰り返し呼ばれるので、
+# 成功したときのログは DEBUG に落とす
+READ_ONLY_ACTIONS = frozenset({"is-active"})
+
 
 @dataclass
 class CommandResult:
@@ -106,6 +110,9 @@ class SystemdService:
     async def _run(self, *args: str) -> CommandResult:
         cmd = self._command(args)
         printable = " ".join(cmd)
+        # 状態を変える操作は必ず記録する。is-active は画面のポーリングから
+        # 何度も呼ばれるので DEBUG に落とし、journald を埋めないようにする
+        level = logging.DEBUG if args and args[0] in READ_ONLY_ACTIONS else logging.INFO
 
         if self.dry_run or not self.available:
             reason = "dry_run" if self.dry_run else "systemctl が無い環境"
@@ -117,6 +124,7 @@ class SystemdService:
                 stderr="",
                 simulated=True,
             )
+        logger.log(level, "%s を実行します", printable)
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -126,9 +134,18 @@ class SystemdService:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except asyncio.TimeoutError:
             proc.kill()
+            logger.warning("%s が %.0f 秒でタイムアウトしました", printable, self.timeout)
             return CommandResult(False, -1, "", f"{printable} がタイムアウトしました")
 
         stderr = err.decode(errors="replace").strip()
+        if proc.returncode == 0:
+            logger.log(level, "%s が完了しました", printable)
+        else:
+            # 唯一ここでしか残らない。画面の 500 だけでは後から追えない
+            logger.warning(
+                "%s が失敗しました (rc=%s): %s",
+                printable, proc.returncode, stderr or "(stderr なし)",
+            )
         # sudoers の設定漏れは原因が分かりにくいので、そうと分かる形にする
         if proc.returncode != 0 and "password is required" in stderr:
             stderr = (

@@ -208,6 +208,8 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 - **ワールド保存に失敗したら再起動を中止する** — セーブデータを失わないため。中止はゲーム内と Discord の両方に通知する
 - **サーバを落とす前に systemctl が通るか確かめる** — `systemctl is-active` を1回叩き、権限で弾かれるなら shutdown API に進まずに中止する。落としてから気づいても起動し直せないため。中止時は「サーバーは落としていません」と明記して通知する
 - **停止に失敗しても落ちたままにしない** — `systemctl stop` / `restart` が失敗したら、保留中の設定は書き込まずに `systemctl start` だけは試みる。結果は `rescue_start` として履歴に残る
+- **障害の記録をプロセスと一緒に消さない** — 管理ツール自身のログは画面（メモリ上200行）と stderr の両方に出す。stderr は systemd 経由で journald に入るので、再起動しても `journalctl -u dashboard-Pal` で追える
+- **systemctl の失敗を必ず残す** — 実行したコマンド・終了コード・stderr を記録する。`is-active` だけは画面のポーリングから繰り返し呼ばれるため、成功時は DEBUG に落として journald を埋めない
 - **予告中はキャンセルできる** — 保存・停止に入った後は受け付けない
 - **無告知でサーバを落とさない** — アナウンス文と予告タイミングを API レベルで必須にしている（既定値へのフォールバックなし）
 - **予告の失敗でシーケンスを止めない** — アナウンスが届かなくても保存と停止は続行し、失敗は履歴に残す
@@ -428,6 +430,7 @@ mise run test
 | `test_pending.py` | 稼働中の保存、停止シーケンスでの自動反映、予約への紐づけ、反映失敗時の復旧、永続化 |
 | `test_scheduler.py` | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
 | `test_monitor.py` | メトリクス記録、メモリ閾値アラートと cooldown、サーバ up/down 検知、ログ配信 |
+| `test_logstream_levels.py` | ログ行の区分判定、管理ツール自身のログが stderr（＝journald）にも出ること、LOG_LEVEL の切り替えと不正値の扱い |
 
 ## 本番デプロイ
 
@@ -633,6 +636,33 @@ sudo chmod g+w /path/to/PalWorldSettings.ini
 sudo usermod -aG systemd-journal mntuser
 sudo -u mntuser journalctl -u palworld.service -n 5    # 読めるか確認
 ```
+
+### ログはどこに出るか
+
+系統が2つあり、出先が違う。
+
+| | 中身 | 見る場所 |
+|---|---|---|
+| 管理ツール自身 | 再起動シーケンスの各ステップ、systemctl の実行と失敗、例外のトレースバック | ログ画面（`app` 区分）と `journalctl -u dashboard-Pal` |
+| ゲームサーバ | `LOG_SOURCE` で指定した取り込み元（既定は `journalctl -u ${PAL_SERVICE_NAME}`） | ログ画面（`server` 区分） |
+
+画面に出るぶんはメモリ上の直近200行だけで、**プロセスを再起動すると消える**。
+後から原因を追うときは journal を見ること。
+
+```bash
+journalctl -u dashboard-Pal --since "2026-08-13 20:00" --until "2026-08-14 00:00"
+journalctl -u dashboard-Pal -f                      # 流しっぱなしで見る
+journalctl -t sudo --since today                    # 誰がどこから systemctl を打ったか
+```
+
+journal が揮発（`/var/log/journal` が無い）だと再起動で消える。永続化するなら:
+
+```bash
+sudo mkdir -p /var/log/journal && sudo systemd-journal-flush
+```
+
+切り分けのときは `LOG_LEVEL=DEBUG` に落とすと、`systemctl is-active` の1件ごとまで出る。
+常用すると journal が埋まるので戻すこと。
 
 ### 7. ゲームサーバ側のユニットも直す
 

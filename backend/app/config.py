@@ -232,6 +232,8 @@ class Settings:
     # journald / file / none
     log_source: str = field(default_factory=lambda: _env("LOG_SOURCE", "journald"))
     log_file: Path = field(default_factory=lambda: Path(_env("LOG_FILE", "/var/log/palworld.log")))
+    # 管理ツール自身のログの詳しさ（journald と画面の両方に効く）
+    log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "INFO"))
 
     # 破壊的操作（kick/ban/shutdown/stop）を実行せず記録だけする
     dry_run: bool = field(default_factory=lambda: _env_bool("PAL_DRY_RUN", False))

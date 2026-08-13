@@ -1,8 +1,12 @@
-"""サーバログのリアルタイム配信。
+"""サーバログのリアルタイム配信と、管理ツール自身のログの出力先設定。
 
 journalctl / ファイル tail / なし の3ソースに対応。
 どのソースでも、この管理ツール自身のログ（再起動シーケンス等）は必ず流す。
 接続が遅い購読者のせいで全体が詰まらないよう、キューが溢れたら古い行を捨てる。
+
+画面に流すだけだと `BACKLOG` 行のメモリ上リングバッファに載るだけで、
+プロセスが再起動した時点で消える。障害の原因を後から追えるよう、
+`configure_logging()` で stderr にも出して journald に残す。
 """
 
 from __future__ import annotations
@@ -10,9 +14,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sys
 import time
 from collections import deque
-from typing import Any, AsyncIterator
+from typing import IO, Any, AsyncIterator
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +26,43 @@ BACKLOG = 200
 
 # 画面で絞り込むための区分。重い順
 LEVELS = ("error", "warn", "info")
+
+# 出力先を設定済みかの目印。create_app が複数回呼ばれても二重に付けない
+_HANDLER_MARK = "_dashboard_pal_stderr"
+
+
+def configure_logging(level: str = "INFO", *, stream: IO[str] | None = None) -> logging.Handler | None:
+    """管理ツール自身のログを stderr に出す。systemd 経由で journald に入る。
+
+    何もしないとログはどこにも残らない。uvicorn が設定するのは `uvicorn*` の
+    ロガーだけで root には何も付かず、そのうえ `app` ロガーには WebSocket 配信用の
+    ハンドラが付くため、Python の lastResort（stderr / WARNING 以上）も発動しない。
+    つまり ERROR すら stderr に出ない状態になる。
+
+    root は WARNING のままにして、`app` 配下だけ指定のレベルまで下げる。
+    root ごと INFO にすると httpx や apscheduler の内部ログで埋まる。
+
+    設定済みなら何もせず None を返す。
+    """
+    root = logging.getLogger()
+    if any(getattr(h, _HANDLER_MARK, False) for h in root.handlers):
+        return None
+
+    handler = logging.StreamHandler(stream if stream is not None else sys.stderr)
+    # journald 側でも時刻は付くが、ログ画面や journalctl --output=cat で
+    # 見たときに時系列を追えないと困る
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    setattr(handler, _HANDLER_MARK, True)
+    root.addHandler(handler)
+    root.setLevel(logging.WARNING)
+
+    resolved = getattr(logging, level.upper(), logging.INFO)
+    if not isinstance(resolved, int):  # 不正な値で全部黙らせない
+        resolved = logging.INFO
+    logging.getLogger("app").setLevel(resolved)
+    return handler
 
 _FROM_LOGGING = {
     logging.CRITICAL: "error",

@@ -166,3 +166,113 @@ async def test_logs_endpoint_filters_by_level(client, app):
 
 async def test_logs_endpoint_rejects_an_unknown_level(client):
     assert (await client.get("/api/logs?level=nope")).status_code == 422
+
+
+# ---- 出力先の設定（issue #28） ---------------------------------------------
+
+
+def _isolated_root():
+    """root ロガーと app ロガーの状態を退避する。"""
+    import contextlib
+    import logging
+
+    @contextlib.contextmanager
+    def ctx():
+        root = logging.getLogger()
+        app_logger = logging.getLogger("app")
+        saved_handlers = root.handlers[:]
+        saved_root_level = root.level
+        saved_app_level = app_logger.level
+        root.handlers.clear()
+        try:
+            yield
+        finally:
+            root.handlers[:] = saved_handlers
+            root.setLevel(saved_root_level)
+            app_logger.setLevel(saved_app_level)
+
+    return ctx()
+
+
+def test_app_logs_reach_stderr():
+    """これが無いと、管理ツールのログは画面のメモリ上にしか残らない。
+
+    uvicorn は root にハンドラを付けず、app 側にハンドラがあるせいで
+    Python の lastResort も発動しないので、ERROR すら stderr に出ない。
+    """
+    import io
+    import logging
+
+    from app.logstream import configure_logging
+
+    buf = io.StringIO()
+    with _isolated_root():
+        configure_logging("INFO", stream=buf)
+        logging.getLogger("app.restart").info("再起動シーケンス: systemctl_stop")
+        logging.getLogger("app.restart").error("シーケンスが異常終了")
+
+    out = buf.getvalue()
+    assert "systemctl_stop" in out
+    assert "異常終了" in out
+
+
+def test_third_party_info_logs_are_not_included():
+    """root ごと INFO にすると httpx や apscheduler で埋まる。"""
+    import io
+    import logging
+
+    from app.logstream import configure_logging
+
+    buf = io.StringIO()
+    with _isolated_root():
+        configure_logging("INFO", stream=buf)
+        logging.getLogger("httpx").info("HTTP Request: GET /v1/api/info")
+        logging.getLogger("httpx").warning("これは残す")
+
+    out = buf.getvalue()
+    assert "HTTP Request" not in out
+    assert "これは残す" in out
+
+
+def test_configure_logging_is_idempotent():
+    """create_app が複数回呼ばれても、同じ行が二重に出ないこと。"""
+    import io
+
+    from app.logstream import configure_logging
+
+    with _isolated_root():
+        first = configure_logging("INFO", stream=io.StringIO())
+        second = configure_logging("INFO", stream=io.StringIO())
+
+    assert first is not None
+    assert second is None
+
+
+def test_log_level_can_be_turned_up():
+    """原因を追うときに DEBUG まで下げられること。"""
+    import io
+    import logging
+
+    from app.logstream import configure_logging
+
+    buf = io.StringIO()
+    with _isolated_root():
+        configure_logging("DEBUG", stream=buf)
+        logging.getLogger("app.services").debug("sudo -n systemctl is-active palworld.service")
+
+    assert "is-active" in buf.getvalue()
+
+
+def test_a_broken_log_level_does_not_silence_everything():
+    """LOG_LEVEL の書き間違いでログが全部消えるのが一番困る。"""
+    import io
+    import logging
+
+    from app.logstream import configure_logging
+
+    buf = io.StringIO()
+    with _isolated_root():
+        configure_logging("VERBOSE", stream=buf)   # そんなレベルは無い
+        logging.getLogger("app.restart").info("残ること")
+
+    assert "残ること" in buf.getvalue()

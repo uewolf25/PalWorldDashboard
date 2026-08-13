@@ -259,3 +259,31 @@ async def test_start_brings_the_server_back(dev_client, mock_state):
     assert resp.status_code == 200
     assert mock_state.running is True
     assert (await dev_client.get("/api/settings-ini/fields")).json()["server_running"] is True
+
+
+async def test_a_failed_systemctl_is_logged(fake_systemctl, caplog):
+    """失敗した systemctl が唯一残る場所。画面の 500 だけでは後から追えない。"""
+    import logging
+
+    fake_systemctl(1, stderr='sudo: The "no new privileges" flag is set, ...')
+    service = SystemdService("palworld.service", use_sudo=True)
+
+    with caplog.at_level(logging.WARNING, logger="app.services"):
+        result = await service.stop()
+
+    assert result.ok is False
+    assert "sudo -n systemctl stop palworld.service" in caplog.text
+    assert "no new privileges" in caplog.text
+
+
+async def test_polling_is_active_does_not_flood_the_log(fake_systemctl, caplog):
+    """is-active は画面から繰り返し呼ばれる。成功時に INFO を出すと journald が埋まる。"""
+    import logging
+
+    fake_systemctl(0, stdout="active")
+    service = SystemdService("palworld.service", use_sudo=True)
+
+    with caplog.at_level(logging.INFO, logger="app.services"):
+        await service.is_active()
+
+    assert caplog.text == ""
