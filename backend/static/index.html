@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="stylesheet" href="/static/fonts/fonts.css">
-<title>Palworld Server Manager</title>
+<title>Pal DashBoard</title>
 <style>
 /* ==========================================================================
    デザイントークン（Issue #19）
@@ -615,7 +615,7 @@ canvas.chart { aspect-ratio: 900 / 200; }
 
 <div class="login-screen" id="login-screen">
   <div class="login-card">
-    <div class="login-brand">Palworld Manager</div>
+    <div class="login-brand">Pal DashBoard</div>
     <p class="login-lead">サーバを操作するにはログインが必要です。閲覧だけならログインは要りません。</p>
     <label class="login-label" for="login-username">ログインID</label>
     <input type="text" id="login-username" autocomplete="username" autofocus>
@@ -629,6 +629,9 @@ canvas.chart { aspect-ratio: 900 / 200; }
 
 <script>
 "use strict";
+
+// 画面に出すこのツールの名前。ゲームサーバ名とは別物
+const APP_NAME = "Pal DashBoard";
 
 // --------------------------------------------------------------------------
 // DOM ヘルパ。値は必ず textContent で入れる（サーバ名やプレイヤー名に
@@ -654,6 +657,21 @@ function el(tag, props, children) {
 }
 const $ = (id) => document.getElementById(id);
 function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+// Enter で確定する入力欄に使う。IME の変換確定を送信と取り違えないようにする。
+//
+// 日本語入力では、変換候補を Enter で確定したときにも keydown が飛んでくる。
+// 素朴に ev.key === "Enter" だけで拾うと、打っている途中の文字列が
+// そのまま送信されてしまう（アナウンスの誤送信）。
+// composition 中かどうかは isComposing で分かるが、古い WebKit などでは
+// 立たないことがあるので、その環境で 229 になる keyCode も併せて弾く。
+function onEnterKey(node, fn) {
+  node.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter") return;
+    if (ev.isComposing || ev.keyCode === 229) return;
+    fn(ev);
+  });
+}
 
 function toast(message, kind) {
   const t = el("div", { class: "toast " + (kind || ""), text: message });
@@ -1059,7 +1077,7 @@ function buildSidebar() {
   clear(bar);
   const env = state.config ? state.config.env : "";
   bar.appendChild(el("div", { class: "brand" }, [
-    el("div", { text: "Palworld Manager" }),
+    el("div", { text: APP_NAME }),
     env ? el("span", { class: "badge " + env, text: env }) : null,
   ]));
 
@@ -1119,9 +1137,11 @@ function buildTopbar() {
     onclick: openDrawer,
   }));
 
+  // 名乗るのは管理ツール自身の名前。ゲームサーバ名（info.servername）は
+  // 出さない。状態は左の丸で示す
   bar.appendChild(el("div", { class: "servername" }, [
     el("span", { class: "statusdot " + (online === null ? "" : online ? "online" : "offline") }),
-    el("span", { text: (s && s.info && s.info.servername) || "Palworld Server" }),
+    el("span", { text: APP_NAME }),
   ]));
 
   const facts = [];
@@ -1312,7 +1332,7 @@ function renderDashboard(root) {
       loadFeed();
     } catch (e) { toast(e.message, "err"); }
   }
-  announceInput.addEventListener("keydown", (ev) => { if (ev.key === "Enter") sendAnnounce(); });
+  onEnterKey(announceInput, sendAnnounce);
 
   function paintAnnounce() {
     const cfg = state.config || {};
@@ -3615,9 +3635,7 @@ async function start() {
   $("login-submit").addEventListener("click", submitLogin);
   $("login-cancel").addEventListener("click", browseAsGuest);
   for (const id of ["login-username", "login-password"]) {
-    $(id).addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter") submitLogin();
-    });
+    onEnterKey($(id), submitLogin);
   }
 
   // 未ログインでも閲覧はできるので、まず画面を出す。
