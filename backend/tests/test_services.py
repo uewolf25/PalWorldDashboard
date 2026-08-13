@@ -130,6 +130,79 @@ async def test_simulated_service_never_touches_the_host():
     assert await service.is_active() is None
 
 
+# ---- 事前チェック（issue #28） ---------------------------------------------
+
+
+class _FakeProc:
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode = returncode
+        self._payload = (stdout.encode(), stderr.encode())
+
+    async def communicate(self):
+        return self._payload
+
+    def kill(self):  # pragma: no cover - タイムアウト経路でしか呼ばれない
+        pass
+
+
+@pytest.fixture
+def fake_systemctl(monkeypatch):
+    """systemctl の実行を差し替える。ホストに systemctl が無くても通す。"""
+    import asyncio
+
+    from app import services
+
+    monkeypatch.setattr(services.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def install(returncode: int, stdout: str = "", stderr: str = ""):
+        async def fake_exec(*args, **kwargs):
+            return _FakeProc(returncode, stdout, stderr)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    return install
+
+
+async def test_preflight_passes_when_the_unit_is_merely_stopped(fake_systemctl):
+    """`is-active` は停止中に非ゼロを返す。それは操作できない理由ではない。"""
+    fake_systemctl(3, stdout="inactive")
+    service = SystemdService("palworld.service", use_sudo=True)
+
+    result = await service.preflight()
+    assert result.ok is True
+
+
+async def test_preflight_fails_when_sudo_cannot_escalate(fake_systemctl):
+    """issue #28 の本体: NoNewPrivileges 下では sudo が昇格できない。
+
+    ここで弾けないと、ゲームサーバを落としてから気づくことになる。
+    """
+    fake_systemctl(
+        1,
+        stderr='sudo: The "no new privileges" flag is set, '
+               "which prevents sudo from running as root.",
+    )
+    service = SystemdService("palworld.service", use_sudo=True)
+
+    result = await service.preflight()
+    assert result.ok is False
+    assert "no new privileges" in result.stderr
+
+
+async def test_preflight_passes_while_the_unit_is_running(fake_systemctl):
+    fake_systemctl(0, stdout="active")
+    service = SystemdService("palworld.service", use_sudo=True)
+
+    assert (await service.preflight()).ok is True
+
+
+async def test_preflight_is_simulated_without_systemctl():
+    """systemctl が無い環境では、事前チェックがシーケンスを止めないこと。"""
+    service = SystemdService("palworld.service", dry_run=True, use_sudo=True)
+    result = await service.preflight()
+    assert result.ok is True and result.simulated is True
+
+
 # ---- 停止シーケンス → 設定編集 という一連の流れ -----------------------------
 
 

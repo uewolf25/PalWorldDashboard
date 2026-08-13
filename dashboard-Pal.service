@@ -18,7 +18,10 @@ StateDirectory=dashboard-Pal
 RuntimeDirectory=dashboard-Pal
 
 # --- 最低限のサンドボックス ---
-NoNewPrivileges=true
+# NoNewPrivileges は付けない。付けると setuid の sudo が原理的に昇格できず、
+# PAL_SYSTEMCTL_SUDO=true でのサーバ操作が start/stop/restart/is-active まとめて
+# 全部失敗する（issue #28）。sudoers を正しく書いても直らない。
+# どうしても付けたい場合は sudo をやめ、polkit で manage-units を許可する構成に移すこと。
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only

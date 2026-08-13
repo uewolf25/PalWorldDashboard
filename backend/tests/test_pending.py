@@ -420,3 +420,33 @@ async def test_fields_endpoint_reports_pending_total(client2):
     await client2.put("/api/settings-ini/fields", json=stage(ExpRate=2.0))
     body = (await client2.get("/api/settings-ini/fields")).json()
     assert body["pending_total"] == 1
+
+
+async def test_stop_failure_does_not_write_the_ini(client2, full_ini):
+    """停止できていないのに ini を書かないこと（issue #28）。
+
+    稼働中に書いても、ゲーム側が終了時にメモリ上の設定で上書きしてしまう。
+    保留は消さずに残し、次の停止機会に回す。
+    """
+    from tests.test_restart import BrokenService
+
+    await client2.put("/api/settings-ini/fields", json=stage(ExpRate=4.0))
+    service = BrokenService(preflight_ok=True)
+    client2.app.state.restart._service = service
+
+    await client2.post("/api/restart", json={
+        "reason": "設定反映", "announce_message": "{time}後に再起動します",
+        "notice_offsets": [0.01],
+    })
+    await client2.app.state.restart.wait()
+
+    status = client2.app.state.restart.status
+    steps = [s["name"] for s in status.steps]
+    assert status.phase == "failed"
+    assert "apply_settings" not in steps
+    assert "ExpRate=4.000000" not in full_ini.read_text()
+    # 保留は残っていて、次の停止で再試行できる
+    assert (await client2.get("/api/settings-ini/pending")).json()["total"] == 1
+    # 落ちたままにはしない
+    assert "rescue_start" in steps
+    assert service.calls == ["preflight", "stop", "start"]

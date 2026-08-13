@@ -206,6 +206,8 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 
 - **再起動を二重に走らせない** — `asyncio.Lock` に加えて、直前の再起動からの経過時間でデバウンス（`force: true` で上書き可）。再起動と停止は同じロックを共有する
 - **ワールド保存に失敗したら再起動を中止する** — セーブデータを失わないため。中止はゲーム内と Discord の両方に通知する
+- **サーバを落とす前に systemctl が通るか確かめる** — `systemctl is-active` を1回叩き、権限で弾かれるなら shutdown API に進まずに中止する。落としてから気づいても起動し直せないため。中止時は「サーバーは落としていません」と明記して通知する
+- **停止に失敗しても落ちたままにしない** — `systemctl stop` / `restart` が失敗したら、保留中の設定は書き込まずに `systemctl start` だけは試みる。結果は `rescue_start` として履歴に残る
 - **予告中はキャンセルできる** — 保存・停止に入った後は受け付けない
 - **無告知でサーバを落とさない** — アナウンス文と予告タイミングを API レベルで必須にしている（既定値へのフォールバックなし）
 - **予告の失敗でシーケンスを止めない** — アナウンスが届かなくても保存と停止は続行し、失敗は履歴に残す
@@ -414,13 +416,13 @@ mise run test
 | ファイル | 内容 |
 |----------|------|
 | `test_dashboard.py` | ステータス、プレイヤー一覧、キック/BAN/UNBAN、ワールド、履歴、操作の認証、秘密情報の伏字化 |
-| `test_restart.py` | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、アナウンス必須化、停止シーケンス、Discord の流量 |
+| `test_restart.py` | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、アナウンス必須化、停止シーケンス、systemctl が通らないときの事前中止と救済起動、Discord の流量 |
 | `test_announce.py` | アナウンス履歴の記録・永続化・上限・フィルタ、送信失敗の記録、サービス操作 |
-| `test_services.py` | モックの稼働状態、起動/停止の反映、到達不能時の判定、停止→編集→起動の一連の流れ |
+| `test_services.py` | モックの稼働状態、起動/停止の反映、到達不能時の判定、事前チェックの合否判定、停止→編集→起動の一連の流れ |
 | `test_settings_ini.py` | ini のパース（引用符内カンマ含む）、更新、バックアップ、復元、不正な内容の拒否、パストラバーサル防止 |
 | `test_settings_schema.py` | 項目の型解釈と書式化、未知キーの型推論、範囲/選択肢の検証、フォーム経由の更新 |
 | `test_check_secrets.py` | 秘密情報の検出漏れと誤検知、実際に起きた流出未遂ケース、対象外リストの肥大防止 |
-| `test_hardening.py` | 実機投入前に潰したリスク（タイムアウト分離、停止待ち、inode 保持、sudo、誤警報抑止、キャッシュ） |
+| `test_hardening.py` | 実機投入前に潰したリスク（タイムアウト分離、停止待ち、inode 保持、sudo と NoNewPrivileges、誤警報抑止、キャッシュ） |
 | `test_settings_form_js.py` | ゲーム設定フォームの入力挙動を node で実行して検証（入力中に要素が作り直されないこと） |
 | `test_auth.py` | トークンの偽造・期限切れ、Cookie の属性、ログアウト、総当たり制限、閲覧と操作の切り分け、パスワードの伏字化 |
 | `test_pending.py` | 稼働中の保存、停止シーケンスでの自動反映、予約への紐づけ、反映失敗時の復旧、永続化 |
@@ -585,6 +587,31 @@ mntuser ALL=(root) NOPASSWD: /usr/bin/systemctl start palworld.service, \
 sudo -u mntuser sudo -n systemctl is-active palworld.service
 ```
 
+> **`dashboard-Pal.service` に `NoNewPrivileges=true` を足さないこと。**
+> `NoNewPrivileges` は setuid の `sudo` が root に昇格するのを**原理的に**止めるので、
+> sudoers を正しく書いても `start` / `stop` / `restart` / `is-active` が全部
+> こうなる（[issue #28](https://github.com/uewolf25/dashboard-Pal/issues/28)）。
+>
+> ```
+> sudo: The "no new privileges" flag is set, which prevents sudo from running as root.
+> ```
+>
+> 厄介なのは、上の確認コマンドが**通ってしまう**こと。`sudo -u mntuser ...` は
+> ログインシェル経由なのでユニットのサンドボックスを再現しない。
+> サービスと同じ条件で確かめるならこちら。
+>
+> ```bash
+> sudo systemd-run --uid=mntuser --pipe --wait sudo -n systemctl is-active palworld.service
+> ```
+>
+> サンドボックスを優先したい場合は sudo をやめ、polkit で
+> `org.freedesktop.systemd1.manage-units` を `mntuser` に許可する構成へ移す。
+> その場合 `PAL_SYSTEMCTL_SUDO` は `false` のままにする。
+
+なお管理ツールは、再起動/停止シーケンスの冒頭で `systemctl is-active` を1回叩いて
+操作できるか確かめる。通らなければ**ゲームサーバを落とす前に**中止するので、
+設定を間違えていてもサーバが落ちたままになることはない。
+
 管理ツール自体を root で動かす手もある（`dashboard-Pal.service` の `User=` を消す）が、
 権限を絞る意味がなくなるので推奨しない。
 
@@ -612,8 +639,14 @@ sudo -u mntuser journalctl -u palworld.service -n 5    # 読めるか確認
 管理ツールではなく **Palworld 側**の `palworld.service` に手を入れる。
 
 - `Restart=always` を**外す** — 管理ツールが停止した直後に systemd が再起動をかけ、
-  ini の書き換えと競合する
+  ini の書き換えと競合する。加えて、管理ツールは shutdown API でプロセスを落としてから
+  `systemctl` を叩くので、外し忘れていると**その隙間で systemd が勝手に起動し直す**。
+  ログ上は再起動が失敗しているのにサーバは動いている、という読みにくい状態になる
 - `TimeoutStopSec=300` を**足す** — ワールド保存の途中で SIGKILL されるとセーブが壊れる
+
+```bash
+systemctl show palworld.service -p Restart -p TimeoutStopUSec   # 現状を確認する
+```
 
 ```bash
 sudo systemctl edit --full palworld.service

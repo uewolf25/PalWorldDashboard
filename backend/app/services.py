@@ -19,6 +19,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# `systemctl is-active` が非ゼロで返すが、コマンド自体は通っている状態。
+# ユニットが動いていないだけなので、事前チェックとしては成功扱いにする
+NOT_RUNNING_STATES = frozenset(
+    {"inactive", "failed", "activating", "deactivating", "unknown"}
+)
+
 
 @dataclass
 class CommandResult:
@@ -44,6 +50,14 @@ class GameService(Protocol):
     async def start(self) -> CommandResult: ...
     async def stop(self) -> CommandResult: ...
     async def restart(self) -> CommandResult: ...
+
+    async def preflight(self) -> CommandResult:
+        """このサービスを操作できる状態か、実際に1回叩いて確かめる。
+
+        再起動シーケンスがゲームサーバを落とす前に呼ぶ。落としてから
+        「操作できません」と分かっても、もう起動し直せない。
+        """
+        ...
 
     async def is_active(self) -> bool | None:
         """稼働しているか。判定できない場合は None を返す。"""
@@ -138,6 +152,20 @@ class SystemdService:
     async def stop(self) -> CommandResult:
         return await self._run("stop", self.unit)
 
+    async def preflight(self) -> CommandResult:
+        """`is-active` を1回だけ叩いて、systemctl がそもそも通るか確かめる。
+
+        見たいのはユニットが動いているかではなく、sudo や polkit の段階で
+        弾かれていないか。ユニットが止まっているだけなら成功として返す。
+        """
+        result = await self._run("is-active", self.unit)
+        if result.ok or result.simulated:
+            return result
+        if result.stdout.strip() in NOT_RUNNING_STATES:
+            # systemctl まで届いている。あとは操作できるはず
+            return CommandResult(True, result.returncode, result.stdout, "")
+        return result
+
     async def is_active(self) -> bool | None:
         result = await self._run("is-active", self.unit)
         if result.simulated:
@@ -199,6 +227,17 @@ class MockGameService:
     async def restart(self) -> CommandResult:
         return await self._post("restart")
 
+    async def preflight(self) -> CommandResult:
+        """モックの制御エンドポイントに届くか確かめる。"""
+        try:
+            client = await self._get_client()
+            resp = await client.get(f"{self.control_url}/__mock__/status")
+        except httpx.HTTPError as exc:
+            return CommandResult(False, -1, "", f"モックサーバに接続できません: {exc}")
+        if resp.status_code >= 400:
+            return CommandResult(False, resp.status_code, "", resp.text[:200])
+        return CommandResult(True, 0, "[mock] status", "")
+
     async def is_active(self) -> bool | None:
         try:
             client = await self._get_client()
@@ -245,6 +284,9 @@ class SimulatedService:
     async def restart(self) -> CommandResult:
         self._running = True
         return await self._result("restart")
+
+    async def preflight(self) -> CommandResult:
+        return await self._result("preflight")
 
     async def is_active(self) -> bool | None:
         # 実行できていないので「分からない」を返す。

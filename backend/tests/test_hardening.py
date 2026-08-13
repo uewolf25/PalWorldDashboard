@@ -231,6 +231,22 @@ async def test_sudo_shows_up_in_the_simulated_output():
     assert "sudo -n systemctl restart" in result.stdout
 
 
+def test_the_unit_does_not_set_no_new_privileges():
+    """issue #28: NoNewPrivileges は setuid の sudo を必ず無効化する。
+
+    付けた瞬間 start/stop/restart/is-active が全部失敗するのに、
+    sudoers を疑って延々ハマる形になるので、ユニット側で固定しておく。
+    """
+    from pathlib import Path
+
+    unit = Path(__file__).resolve().parents[2] / "dashboard-Pal.service"
+    directives = [
+        line.strip() for line in unit.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert not any(line.startswith("NoNewPrivileges") for line in directives)
+
+
 # ---- R-08 メンテ中の誤警報 -------------------------------------------------
 
 
