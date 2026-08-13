@@ -476,22 +476,38 @@ anyenv install pyenv
 
 pyenv install -l | grep -E '^\s+3\.13\.' | tail -3    # 最新のパッチを確認
 pyenv install 3.13.5                                  # ← 確認した版に読み替える
-pyenv global 3.13.5
 
 chmod -R a+rX /opt/anyenv        # mntuser から読める・実行できるように
 exit
 ```
 
-`pyenv global` が変えるのは pyenv の shim だけで、`/usr/bin/python3` はそのまま。
-OS 側のツールには影響しない。
+**`pyenv global` は設定しない。** 管理ツールが使うのは次の手順で作る venv だけで、
+venv は作成に使った python を絶対パスで参照するため、pyenv のバージョン選択とは無関係に動く。
+`python3` は OS の 3.12 のままにしておく。
 
-### 3. 配置
+### 3. 取得と配置
+
+GitHub から取ってくる。公開リポジトリなので認証は要らない。
 
 ```bash
 id mntuser                       # 既存ユーザ。無ければ先に用意する
-sudo mkdir -p /opt/dashboard-Pal
-sudo rsync -a --exclude .venv --exclude .dev --exclude .git ./ /opt/dashboard-Pal/
 
+sudo git clone https://github.com/uewolf25/PalWorldDashboard.git /opt/dashboard-Pal
+sudo git -C /opt/dashboard-Pal log --oneline -1     # 入れた版を控えておく
+```
+
+`.git` ごと置いておけば、更新が `git pull` で済む（下記）。
+
+バージョン指定が要るのは、このディレクトリで手作業するときだけ。
+`pyenv global` ではなく**ローカル指定**を置く。
+
+```bash
+echo 3.13.5 | sudo tee /opt/dashboard-Pal/.python-version    # pyenv local と同じもの
+```
+
+venv は pyenv の shim ではなく**実体を絶対パスで**呼んで作る。
+
+```bash
 cd /opt/dashboard-Pal/backend
 sudo /opt/anyenv/envs/pyenv/versions/3.13.5/bin/python3 -m venv .venv
 sudo .venv/bin/pip install -r requirements.txt
@@ -504,17 +520,31 @@ sudo chown -R mntuser:mntuser /opt/dashboard-Pal
 > あとから `pyenv uninstall 3.13.5` したりパッチを上げたりすると `.venv` が壊れて
 > サービスが起動しなくなる。Python を入れ替えたときは venv を作り直すこと。
 
+**更新するとき**
+
+`chown` 後は `/opt/dashboard-Pal` が `mntuser` のものになるので、**`mntuser` として**引く。
+root で `git pull` すると所有者違いで `dubious ownership` に弾かれる。
+
+```bash
+sudo -u mntuser git -C /opt/dashboard-Pal pull
+sudo -u mntuser /opt/dashboard-Pal/backend/.venv/bin/pip install -r /opt/dashboard-Pal/backend/requirements.txt
+sudo systemctl restart dashboard-Pal
+```
+
+`/etc/dashboard-Pal.env` と `/etc/systemd/system/dashboard-Pal.service` は `/opt` の外にあるので
+`git pull` では上書きされない。`dashboard-Pal.env.example` に項目が増えていないかだけ確認する。
+
 ### 4. 環境変数
 
 ```bash
-sudo install -o root -g root -m 600 dashboard-Pal.env.example /etc/dashboard-Pal.env
+sudo install -o root -g root -m 600 /opt/dashboard-Pal/dashboard-Pal.env.example /etc/dashboard-Pal.env
 sudo nano /etc/dashboard-Pal.env   # PAL_ADMIN_PASSWORD などを埋める
 ```
 
 ### 5. systemd 登録
 
 ```bash
-sudo cp dashboard-Pal.service /etc/systemd/system/
+sudo cp /opt/dashboard-Pal/dashboard-Pal.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dashboard-Pal
 sudo systemctl status dashboard-Pal
