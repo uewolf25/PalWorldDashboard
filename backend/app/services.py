@@ -55,7 +55,7 @@ class GameService(Protocol):
 class SystemdService:
     """systemctl でゲームサーバのユニットを操作する（本番）。
 
-    管理ツールは専用ユーザ（palmanager など）で動くのが普通なので、
+    管理ツールは root 以外のユーザ（本番は mntuser）で動くのが普通なので、
     そのままでは systemctl を実行できない。sudoers で必要な操作だけ許可し、
     use_sudo=True にして `sudo -n systemctl ...` として呼ぶ。
 

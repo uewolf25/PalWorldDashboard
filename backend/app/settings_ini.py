@@ -204,7 +204,7 @@ class SettingsIniStore:
         既存ファイルは **inode を保ったまま上書きする**（open("w") で truncate）。
         一時ファイルを作って rename すると別 inode に置き換わり、
         所有者・グループ・パーミッションが書き込んだプロセスのものになる。
-        Palworld が steam ユーザ、管理ツールが palmanager ユーザという構成だと、
+        Palworld が steam ユーザ、管理ツールが mntuser ユーザという構成だと、
         一度書いた時点でゲーム側が停止時に ini を書き戻せなくなる。
         chmod / chown での復元はファイルの所有者でないと効かないので、
         そもそも置き換えない方が確実。
