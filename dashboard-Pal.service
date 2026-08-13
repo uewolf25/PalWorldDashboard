@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=palmanager
-Group=palmanager
+User=mntuser
+Group=mntuser
 WorkingDirectory=/opt/dashboard-Pal/backend
 EnvironmentFile=/etc/dashboard-Pal.env
 ExecStart=/opt/dashboard-Pal/backend/.venv/bin/uvicorn app.main:app --host ${APP_HOST} --port ${APP_PORT}

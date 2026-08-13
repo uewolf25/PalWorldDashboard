@@ -15,6 +15,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -127,12 +128,21 @@ globalThis.fetch = async () => { throw new Error("fetch は使いません"); };
 
 
 def run_js(body: str) -> dict:
-    """画面スクリプト + 検証コードを node で実行し、結果の JSON を返す。"""
+    """画面スクリプト + 検証コードを node で実行し、結果の JSON を返す。
+
+    スクリプトは `-e` で渡さずファイルに書き出す。Linux は argv 1個あたり
+    128KB までで、画面スクリプトがそれを超えると
+    `OSError: Argument list too long` になる（macOS では上限が高く通ってしまう）。
+    拡張子を `.mjs` にしておけば `--input-type=module` と同じくモジュール扱いになる。
+    """
     script = DOM_SHIM + "\n" + _page_script() + "\n" + body
-    proc = subprocess.run(
-        ["node", "--input-type=module", "-e", script],
-        capture_output=True, text=True, timeout=60,
-    )
+    with tempfile.TemporaryDirectory() as tmp:
+        entry = Path(tmp) / "run.mjs"
+        entry.write_text(script, encoding="utf-8")
+        proc = subprocess.run(
+            ["node", str(entry)],
+            capture_output=True, text=True, timeout=60,
+        )
     if proc.returncode != 0:
         raise AssertionError(f"node の実行に失敗しました:\n{proc.stderr[-3000:]}")
     return json.loads(proc.stdout.strip().splitlines()[-1])

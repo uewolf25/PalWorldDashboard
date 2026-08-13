@@ -445,9 +445,10 @@ RESTAPIEnabled=True,RESTAPIPort=8212,AdminPassword="任意のパスワード"
 開発と CI は Python 3.13 だが、**Ubuntu 24.04 の標準は 3.12**。
 OS の `python3` を入れ替えずに 3.13 を用意するため、anyenv 経由で pyenv を入れる。
 
-サービスユーザ `palmanager` はログインシェルも home も持たないので、
+サービスは既存ユーザ `mntuser` で動かすが、pyenv は
 **個人の home ではなく `/opt/anyenv` に置いて誰からでも読めるようにする**
-（`/root/.anyenv` だと 700 で palmanager から実行できない）。
+（`/root/.anyenv` だと 700 で mntuser から実行できない。`mntuser` の home 配下に置くと、
+サービスの `ProtectHome=read-only` や home の権限変更に巻き込まれる）。
 
 ```bash
 # pyenv は Python をソースからビルドするので、その依存を先に入れる
@@ -477,7 +478,7 @@ pyenv install -l | grep -E '^\s+3\.13\.' | tail -3    # 最新のパッチを確
 pyenv install 3.13.5                                  # ← 確認した版に読み替える
 pyenv global 3.13.5
 
-chmod -R a+rX /opt/anyenv        # palmanager から読める・実行できるように
+chmod -R a+rX /opt/anyenv        # mntuser から読める・実行できるように
 exit
 ```
 
@@ -487,14 +488,14 @@ OS 側のツールには影響しない。
 ### 3. 配置
 
 ```bash
-sudo useradd -r -s /usr/sbin/nologin palmanager
+id mntuser                       # 既存ユーザ。無ければ先に用意する
 sudo mkdir -p /opt/dashboard-Pal
 sudo rsync -a --exclude .venv --exclude .dev --exclude .git ./ /opt/dashboard-Pal/
 
 cd /opt/dashboard-Pal/backend
 sudo /opt/anyenv/envs/pyenv/versions/3.13.5/bin/python3 -m venv .venv
 sudo .venv/bin/pip install -r requirements.txt
-sudo chown -R palmanager:palmanager /opt/dashboard-Pal
+sudo chown -R mntuser:mntuser /opt/dashboard-Pal
 
 .venv/bin/python -V              # 3.13.x であることを確認
 ```
@@ -523,7 +524,7 @@ http://\<サーバIP\>:8080/ で管理画面が開く。
 
 ### 6. 権限まわり（ここは環境に合わせて調整が必要）
 
-管理ツールは `palmanager` ユーザで動くので、そのままでは次の3つができない。
+管理ツールは `mntuser` ユーザで動くので、そのままでは次の3つができない。
 
 **ゲームサーバの systemctl 操作** — sudoers で必要な操作だけ許可する。
 
@@ -537,7 +538,7 @@ command -v systemctl     # まず実パスを確認する
 
 ```
 # /etc/sudoers.d/dashboard-Pal   （visudo -f で編集し、visudo -c で検証する）
-palmanager ALL=(root) NOPASSWD: /usr/bin/systemctl start palworld.service, \
+mntuser ALL=(root) NOPASSWD: /usr/bin/systemctl start palworld.service, \
                                 /usr/bin/systemctl stop palworld.service, \
                                 /usr/bin/systemctl restart palworld.service, \
                                 /usr/bin/systemctl is-active palworld.service
@@ -546,9 +547,12 @@ palmanager ALL=(root) NOPASSWD: /usr/bin/systemctl start palworld.service, \
 そのうえで `/etc/dashboard-Pal.env` に `PAL_SYSTEMCTL_SUDO=true` を設定する。
 **sudoers と環境変数の両方が要る。片方だけでは動かない。**
 
+`mntuser` が `sudo` グループに入っていても、この登録は省略できない。
+管理ツールは `sudo -n`（パスワードを聞かない）で呼ぶため、NOPASSWD の行が無いと弾かれる。
+
 ```bash
 # 実際に通るか確認（パスワードを聞かれたら失敗）
-sudo -u palmanager sudo -n systemctl is-active palworld.service
+sudo -u mntuser sudo -n systemctl is-active palworld.service
 ```
 
 管理ツール自体を root で動かす手もある（`dashboard-Pal.service` の `User=` を消す）が、
@@ -558,7 +562,7 @@ sudo -u palmanager sudo -n systemctl is-active palworld.service
 （所有者を変えないため）、**ファイル自体への書き込み権限**が要る。
 
 ```bash
-sudo chgrp palmanager /path/to/PalWorldSettings.ini
+sudo chgrp mntuser /path/to/PalWorldSettings.ini
 sudo chmod g+w /path/to/PalWorldSettings.ini
 ```
 
@@ -569,8 +573,8 @@ sudo chmod g+w /path/to/PalWorldSettings.ini
 **journalctl の閲覧** — ログ画面を使うなら `systemd-journal` グループに入れる。
 
 ```bash
-sudo usermod -aG systemd-journal palmanager
-sudo -u palmanager journalctl -u palworld.service -n 5    # 読めるか確認
+sudo usermod -aG systemd-journal mntuser
+sudo -u mntuser journalctl -u palworld.service -n 5    # 読めるか確認
 ```
 
 ### 7. ゲームサーバ側のユニットも直す

@@ -164,7 +164,7 @@ def test_write_preserves_the_inode(ini_path, settings):
 
     一時ファイル + rename だと別 inode になり、所有者とパーミッションが
     書き込んだプロセスのものになる。Palworld が steam、管理ツールが
-    palmanager という構成だと、ゲーム側が停止時に ini を書き戻せなくなる。
+    mntuser という構成だと、ゲーム側が停止時に ini を書き戻せなくなる。
     """
     from app.settings_ini import SettingsIniStore
 
