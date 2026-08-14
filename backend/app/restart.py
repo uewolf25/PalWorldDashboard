@@ -83,7 +83,8 @@ class RestartDebounced(RuntimeError):
 
 
 class ServiceControlUnavailable(RuntimeError):
-    """systemctl が通らないと分かったので、サーバを落とす前に中止した。
+    """プロセス制御（systemctl / LinuxGSM）が通らないと分かったので、
+    サーバを落とす前に中止した。
 
     落としてから気づいても起動し直せないので、これだけは
     「サーバは無事」という前提で報告してよい失敗になる。
@@ -181,7 +182,7 @@ class RestartManager:
         poll_interval: float = 1.0,
         sequence_timeout: float = DEFAULT_SEQUENCE_TIMEOUT,
         health: ServerHealth | None = None,
-        use_systemd: bool = True,
+        control_process: bool = True,
         apply_pending: ApplyPending | None = None,
         count_pending: CountPending | None = None,
         suppress_alerts: Callable[[float], None] | None = None,
@@ -213,7 +214,10 @@ class RestartManager:
         self.poll_interval = poll_interval
         # 予告後の実行部を打ち切るまでの秒数（0 以下で無効）
         self.sequence_timeout = sequence_timeout
-        self.use_systemd = use_systemd
+        # プロセスの起動/停止までこちらでやるか。false のときは shutdown API を
+        # 投げるだけで、起こし直すのは外（LinuxGSM の monitor や systemd の
+        # Restart=）に任せる。systemd 固有の設定ではない
+        self.control_process = control_process
 
         self.status = RestartStatus()
         self._lock = asyncio.Lock()
@@ -331,7 +335,7 @@ class RestartManager:
     def release(self, reason: str = "手動") -> bool:
         """固まったシーケンスの追跡をやめて、次の操作を受け付けられるようにする。
 
-        サーバに送った操作（shutdown API や systemctl）は取り消せない。ここで
+        サーバに送った操作（shutdown API や起動/停止コマンド）は取り消せない。ここで
         するのは管理ツール側の状態を解放することだけで、サーバがどうなっているかは
         操作者が確かめる必要がある。
 
@@ -479,7 +483,8 @@ class RestartManager:
                         )
                         await self._announcer.discord_only(
                             f"サーバー{label}を中止しました",
-                            f"systemctl を実行できませんでした。**サーバーは落としていません。**\n{exc}",
+                            f"{self._service.label} を実行できませんでした。"
+                            f"**サーバーは落としていません。**\n{exc}",
                             source=mode,
                             level="crit",
                             reason=reason,
@@ -602,7 +607,7 @@ class RestartManager:
 
         以前は `min(shutdown_waittime, 5)` 秒だけ寝ていたが、
         実機のワールド保存はもっと時間がかかる。待ちが足りないまま
-        systemctl stop に進むと、保存中に SIGTERM を送ることになる。
+        停止コマンドに進むと、保存中に SIGTERM を送ることになる。
 
         逆に固定で長く寝ると、すぐ落ちた場合に無駄な停止時間が延びる。
         応答が止まった時点を「落ちた」とみなして先へ進む。
@@ -656,10 +661,11 @@ class RestartManager:
     ) -> None:
         label = MODE_LABELS.get(mode, mode)
 
-        # shutdown API を通すとゲームサーバは落ちる。そこから先で systemctl が
-        # 通らないと分かっても、起動し直す手段が無いまま落ちたままになる。
+        # shutdown API を通すとゲームサーバは落ちる。そこから先でプロセス制御
+        # （systemctl / LinuxGSM の管理スクリプト）が通らないと分かっても、
+        # 起動し直す手段が無いまま落ちたままになる。
         # 引き返せるうちに、サービスを操作できるかどうかだけ確かめておく
-        if self.use_systemd:
+        if self.control_process:
             check = await self._service.preflight()
             if not check.ok:
                 reason = check.stderr or check.stdout or "詳細不明"
@@ -677,18 +683,18 @@ class RestartManager:
             )
             self._step(status, "shutdown_api", detail=f"waittime={self.shutdown_waittime}")
         except PalApiError as exc:
-            # 既に落ちている場合もあるので警告に留めて systemctl に進む
+            # 既に落ちている場合もあるので警告に留めてプロセス制御に進む
             self._step(status, "shutdown_api", ok=False, detail=str(exc))
 
-        if not self.use_systemd:
-            self._step(status, "systemd_skipped", detail="systemd 未使用（自動再起動に任せる）")
+        if not self.control_process:
+            self._step(status, "service_control_skipped", detail="プロセス制御なし（自動再起動に任せる）")
             return
 
         api_was_up = await self._wait_until_down(status)
 
         if mode == "stop":
             result = await self._service.stop()
-            self._step(status, "systemctl_stop", ok=result.ok, detail=result.stdout or result.stderr)
+            self._step(status, "service_stop", ok=result.ok, detail=result.stdout or result.stderr)
             if not result.ok:
                 raise RuntimeError(f"停止に失敗: {result.stderr}")
             # 停止したので、保留中の設定変更を書き込める
@@ -701,7 +707,7 @@ class RestartManager:
         # restart で一気に上げ直すとその隙間が作れない。
         if not self._has_pending(schedule_id):
             result = await self._service.restart()
-            self._step(status, "systemctl_restart", ok=result.ok, detail=result.stdout or result.stderr)
+            self._step(status, "service_restart", ok=result.ok, detail=result.stdout or result.stderr)
             self._suppress_downtime(self.alert_grace)
             if not result.ok:
                 raise RuntimeError(f"再起動に失敗: {result.stderr}{await self._rescue_start(status)}")
@@ -709,7 +715,7 @@ class RestartManager:
             return
 
         result = await self._service.stop()
-        self._step(status, "systemctl_stop", ok=result.ok, detail=result.stdout or result.stderr)
+        self._step(status, "service_stop", ok=result.ok, detail=result.stdout or result.stderr)
         if not result.ok:
             # 止まったのか確認できていないので ini は書かない。稼働中に書いても
             # 終了時にゲーム側のメモリ上の設定で上書きされるだけで、事故になる。
@@ -721,7 +727,7 @@ class RestartManager:
         # 反映に失敗していてもサーバは必ず上げ直す。
         # 設定が変わらないより、サーバが落ちたままの方が困る。
         result = await self._service.start()
-        self._step(status, "systemctl_start", ok=result.ok, detail=result.stdout or result.stderr)
+        self._step(status, "service_start", ok=result.ok, detail=result.stdout or result.stderr)
         # 起動コマンドは即座に返るが、実機が接続を受け付けるまでは数十秒かかる。
         # ここから改めて猶予を取り直す
         self._suppress_downtime(self.alert_grace)
@@ -730,7 +736,7 @@ class RestartManager:
         await self._wait_until_up(status, check=api_was_up)
 
     async def _rescue_start(self, status: RestartStatus) -> str:
-        """systemctl での再起動/停止に失敗したあと、起動だけでも試す。
+        """再起動/停止コマンドに失敗したあと、起動だけでも試す。
 
         shutdown API は既に通してあるのでゲームサーバは落ちている。ここで
         諦めると、誰も気づかないまま朝まで落ちたままになる（issue #28）。

@@ -142,10 +142,10 @@ async def test_restart_applies_pending_between_stop_and_start(client2, full_ini,
     status = client2.app.state.restart.status
     steps = [s["name"] for s in status.steps]
     assert status.phase == "done"
-    assert "systemctl_stop" in steps
+    assert "service_stop" in steps
     assert "apply_settings" in steps
-    assert "systemctl_start" in steps
-    assert steps.index("systemctl_stop") < steps.index("apply_settings") < steps.index("systemctl_start")
+    assert "service_start" in steps
+    assert steps.index("service_stop") < steps.index("apply_settings") < steps.index("service_start")
 
     assert "ExpRate=3.000000" in full_ini.read_text()
     assert mock_state.running is True   # 起動し直されている
@@ -159,7 +159,7 @@ async def test_restart_without_pending_uses_plain_restart(client2, mock_state):
     await client2.app.state.restart.wait()
 
     steps = [s["name"] for s in client2.app.state.restart.status.steps]
-    assert "systemctl_restart" in steps
+    assert "service_restart" in steps
     assert "apply_settings" not in steps
 
 

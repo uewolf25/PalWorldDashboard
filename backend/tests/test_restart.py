@@ -58,7 +58,7 @@ async def test_restart_announces_saves_then_shuts_down(client, app, mock_state):
     step_names = [s["name"] for s in status.steps]
     assert step_names.count("announce") == 3
     assert step_names.index("world_save") < step_names.index("shutdown_api")
-    assert "systemctl_restart" in step_names
+    assert "service_restart" in step_names
 
 
 async def test_announce_template_renders_remaining_time(client, app, mock_state):
@@ -215,8 +215,8 @@ async def test_shutdown_stops_without_restarting(client, app, mock_state):
     assert status.phase == "done"
     assert "停止" in status.message
     step_names = [s["name"] for s in status.steps]
-    assert "systemctl_stop" in step_names
-    assert "systemctl_restart" not in step_names
+    assert "service_stop" in step_names
+    assert "service_restart" not in step_names
     assert all("停止します" in a for a in mock_state.announcements[:3])
 
 
@@ -364,6 +364,8 @@ class BrokenService:
     ときの再現。sudoers を正しく書いても sudo が昇格できず全滅する。
     """
 
+    label = "テスト用サービス"
+
     def __init__(self, *, preflight_ok: bool = False) -> None:
         self.preflight_ok = preflight_ok
         self.calls: list[str] = []
@@ -446,7 +448,7 @@ async def test_failed_restart_still_tries_to_bring_the_server_back(client, app, 
     assert mock_state.shutdowns  # ここまでは進んでいる
 
     step_names = [s["name"] for s in status.steps]
-    assert "systemctl_restart" in step_names
+    assert "service_restart" in step_names
     assert "rescue_start" in step_names
     assert service.calls == ["preflight", "restart", "start"]
 
@@ -461,6 +463,8 @@ async def test_failed_restart_still_tries_to_bring_the_server_back(client, app, 
 
 class HangingService:
     """systemctl / LinuxGSM が返ってこないサービス。"""
+
+    label = "テスト用サービス"
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -590,6 +594,8 @@ async def test_task_killed_before_it_runs_does_not_wedge_the_status(app):
 class RebootingService:
     """restart / start でモックサーバを実際に起こすサービス。"""
 
+    label = "テスト用サービス"
+
     def __init__(self, mock_state) -> None:
         self._state = mock_state
         self.calls: list[str] = []
@@ -661,3 +667,21 @@ async def test_stop_sequence_does_not_wait_for_a_startup(client, app, mock_state
     assert status.phase == "done"
     assert status.startup_confirmed is None
     assert "wait_until_up" not in [s["name"] for s in status.steps]
+
+
+async def test_abort_notice_names_the_real_backend(client, app, notifier):
+    """LinuxGSM 構成なのに「systemctl が…」と書かないこと。
+
+    ステップ名も通知文もバックエンド中立にしてある。実体と違う名前で
+    報告されると、切り分けが的外れな方向に進む。
+    """
+    service = BrokenService()
+    service.label = "pwserver"
+    app.state.restart._service = service
+
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    crit = [e for e in notifier.sent if e.get("level") == "crit"][-1]
+    assert "pwserver を実行できませんでした" in crit["description"]
+    assert "systemctl" not in crit["description"]

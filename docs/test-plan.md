@@ -47,8 +47,8 @@ cd /opt/dashboard-Pal && python3 scripts/check_secrets.py
 | `test_check_secrets.py` | 56 | 秘密情報の検出漏れと誤検知、実際に起きた流出未遂ケース、対象外リストの肥大防止 |
 | `test_auth.py` | 55 | トークンの偽造・期限切れ、Cookie の属性、ログアウト、総当たり制限、閲覧と操作の切り分け、パスワードの伏字化 |
 | `test_scheduler.py` | 36 | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
-| `test_services.py` | 37 | バックエンド選択、事前チェックの合否判定、LinuxGSM 経路、失敗の記録、**常駐プロセスに標準出力を握られても戻ること** |
-| `test_restart.py` | 41 | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、事前中止と救済起動、**戻ってこないときの打ち切りと強制解除、起動を見届けてからの完了** |
+| `test_services.py` | 38 | バックエンド選択、事前チェックの合否判定、LinuxGSM 経路、失敗の記録、**常駐プロセスに標準出力を握られても戻ること** |
+| `test_restart.py` | 42 | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、事前中止と救済起動、**戻ってこないときの打ち切りと強制解除、起動を見届けてからの完了** |
 | `test_logstream_levels.py` | 33 | ログ行の区分判定、stderr（＝journald）への出力、`LOG_LEVEL` の切り替えと不正値 |
 | `test_world.py` | 30 | ワールドセーブのバックアップ、世代管理、復元、パストラバーサル防止 |
 | `test_presence.py` | 29 | 入退室の検知と履歴、永続化 |
@@ -206,7 +206,7 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 |---|---|
 | 目的 | **再起動が最後まで通ること**（本命） |
 | 手順 | 「サーバ設定」から再起動（予告は最短で可） |
-| 期待 | ステップが順に記録され `phase=done`<br>`preflight` → `world_save` → `shutdown_api` → `wait_until_down` → `systemctl_restart`（または LinuxGSM の restart）→ `wait_until_up`<br>その後サーバが起動し、ダッシュボードが `online` に戻る |
+| 期待 | ステップが順に記録され `phase=done`<br>`preflight` → `world_save` → `shutdown_api` → `wait_until_down` → `service_restart`→ `wait_until_up`<br>その後サーバが起動し、ダッシュボードが `online` に戻る |
 | 計測 | **停止から復帰までの秒数**は `wait_until_up` ステップと完了通知の「復帰まで N 秒」に出る。`RESTART_STARTUP_TIMEOUT`（既定180秒）に近いなら設定を伸ばす |
 | NG の見方 | `rescue_start` が記録されていたら、停止か再起動のコマンドが失敗している。完了通知に「⚠️ サーバが応答しません」が付いていたら、コマンドは通ったが上がってきていない |
 
@@ -235,7 +235,7 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 |---|---|
 | 目的 | **ini を書き込めること**（所有者・権限・サンドボックス） |
 | 手順 | 「ゲーム設定」で1項目変更 → 「次にサーバが停止するとき」を選んで保存 → サーバ設定タブから再起動 |
-| 期待 | ステップに `apply_settings` が入り、`systemctl_stop` → `apply_settings` → `systemctl_start` の順になる。再起動後に値が反映されている。`/var/lib/dashboard-Pal/backups/` に世代が増える |
+| 期待 | ステップに `apply_settings` が入り、`service_stop` → `apply_settings` → `service_start` の順になる。再起動後に値が反映されている。`/var/lib/dashboard-Pal/backups/` に世代が増える |
 | NG の見方 | `ReadWritePaths` が ini の実際のディレクトリを含んでいない、ini にグループ書き込み権限がない |
 
 | ID | T-18 |
@@ -249,7 +249,7 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 |---|---|
 | 目的 | 停止シーケンス（起動しない）が動くこと |
 | 手順 | 「サーバ設定」から停止 |
-| 期待 | `systemctl_stop` までで終わり、`systemctl_restart` / `systemctl_start` が記録されない。サーバが停止したまま |
+| 期待 | `service_stop` までで終わり、`service_restart` / `service_start` が記録されない。サーバが停止したまま |
 | 後処理 | 起動する |
 
 | ID | T-20 |

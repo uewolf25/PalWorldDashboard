@@ -112,6 +112,11 @@ class CommandResult:
 class GameService(Protocol):
     """ゲームサーバのプロセスを起動/停止する口。"""
 
+    # 何でプロセスを操作しているか（通知やログに出す短い名前）。
+    # 「systemctl が実行できません」と書いてあるのに LinuxGSM 構成だった、
+    # というすれ違いを無くすため、実体の名前を持たせる
+    label: str
+
     async def start(self) -> CommandResult: ...
     async def stop(self) -> CommandResult: ...
     async def restart(self) -> CommandResult: ...
@@ -154,6 +159,10 @@ class SystemdService:
         self.dry_run = dry_run
         self.timeout = timeout
         self.use_sudo = use_sudo
+
+    @property
+    def label(self) -> str:
+        return "systemctl"
 
     @property
     def available(self) -> bool:
@@ -283,6 +292,7 @@ class MockGameService:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.control_url = control_url.rstrip("/")
+        self.label = "モックサーバの制御 API"
         self._timeout = timeout
         self._client = client
         self._owns_client = client is None
@@ -364,6 +374,11 @@ class LgsmService:
         self.command = command
         self.dry_run = dry_run
         self.timeout = timeout
+
+    @property
+    def label(self) -> str:
+        # 実際に叩く管理スクリプトの名前（pwserver など）
+        return Path(self.command).name or "LinuxGSM"
 
     async def _run(self, action: str) -> CommandResult:
         printable = f"{self.command} {action}"
@@ -462,6 +477,7 @@ class SimulatedService:
 
     def __init__(self, unit: str = "") -> None:
         self.unit = unit
+        self.label = "空回しバックエンド（simulated）"
         self._running = True
 
     async def _result(self, action: str) -> CommandResult:

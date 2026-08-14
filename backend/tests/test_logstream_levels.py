@@ -208,11 +208,11 @@ def test_app_logs_reach_stderr():
     buf = io.StringIO()
     with _isolated_root():
         configure_logging("INFO", stream=buf)
-        logging.getLogger("app.restart").info("再起動シーケンス: systemctl_stop")
+        logging.getLogger("app.restart").info("再起動シーケンス: service_stop")
         logging.getLogger("app.restart").error("シーケンスが異常終了")
 
     out = buf.getvalue()
-    assert "systemctl_stop" in out
+    assert "service_stop" in out
     assert "異常終了" in out
 
 

@@ -532,3 +532,12 @@ async def test_command_that_never_exits_still_times_out(tmp_path):
     result = await LgsmService(str(script), timeout=0.5).start()
     assert result.ok is False
     assert "タイムアウト" in result.stderr
+
+
+async def test_backends_report_what_they_actually_run():
+    """通知やログに出す名前は実体に合わせる（issue #34 の切り分けで混乱した）。"""
+    from app.services import LgsmService, SimulatedService, SystemdService
+
+    assert LgsmService("/home/mntuser/pwserver").label == "pwserver"
+    assert SystemdService("palworld.service").label == "systemctl"
+    assert "simulated" in SimulatedService().label

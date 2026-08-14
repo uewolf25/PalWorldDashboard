@@ -165,6 +165,35 @@ sudoers を検証するときは、**ユニットと同じ条件で**確かめ�
 sudo systemd-run --uid=mntuser --pipe --wait sudo -n systemctl is-active palworld.service
 ```
 
+### シーケンスのステップ名と、その実体
+
+journal と `/api/restart` に出るステップ名は**バックエンド中立**にしてある。
+プロセスの操作を実際に何でやるかは `PAL_SERVICE_BACKEND` で決まる。
+
+| ステップ | 何をしているか | lgsm 構成の実体 | systemd 構成の実体 |
+|---|---|---|---|
+| `preflight` | 操作できるか先に確かめる | スクリプトの存在と実行権限を見る（**叩かない**） | `systemctl show` / `is-active` |
+| `world_save` | ワールド保存 | REST API `/v1/api/save` | 同左 |
+| `shutdown_api` | ゲームに終了を指示 | REST API `/v1/api/shutdown` | 同左 |
+| `wait_until_down` | 応答が止まるのを待つ | REST API への到達性 | 同左 |
+| `service_stop` | プロセスを止める | `pwserver stop` | `systemctl stop <unit>` |
+| `service_start` | プロセスを起こす | `pwserver start` | `systemctl start <unit>` |
+| `service_restart` | プロセスを再起動 | `pwserver restart` | `systemctl restart <unit>` |
+| `apply_settings` | 停止中に ini を反映 | ファイル書き込み | 同左 |
+| `wait_until_up` | 応答が返るのを待つ | REST API への到達性 | 同左 |
+| `rescue_start` | 失敗後に起動だけ試す | `pwserver start` | `systemctl start <unit>` |
+| `released` | 進行状態を手で解除した | — | — |
+
+`systemctl_stop` / `systemctl_start` / `systemctl_restart` は**旧名**（systemd しか
+無かった頃の名残）。LinuxGSM 構成でも `systemctl` と表示されていて紛らわしかったので
+`service_*` に改名した。古いログを grep するときだけ旧名も要る。
+
+どの経路で動いているかは設定を開かずに確認できる。
+
+```bash
+curl -s localhost:8080/api/config | python3 -m json.tool | grep -E "pal_service_backend|pal_service_command"
+```
+
 ### 「再起動シーケンス進行中」のまま戻らない（issue #34）
 
 サーバは落ちて起動しているのに、画面が「(restarting) …」のまま止まっている状態。
@@ -196,7 +225,7 @@ journalctl -u dashboard-Pal --since "-30min" | grep シーケンス
 | `world_save` | shutdown API の応答待ち | `PAL_SLOW_TIMEOUT`（既定120秒） |
 | `shutdown_api` | サーバが落ちるのを待っている | `RESTART_SHUTDOWN_GRACE`（既定120秒） |
 | `wait_until_down` / `apply_settings` | 起動・停止コマンドが返ってこない | `PAL_SERVICE_TIMEOUT`（既定300秒）。**ステップ間がちょうど 300 秒空いていたらこれ** |
-| `systemctl_start` / `systemctl_restart` | サーバが応答を返すのを待っている | `RESTART_STARTUP_TIMEOUT`（既定180秒） |
+| `service_start` / `service_restart` | サーバが応答を返すのを待っている | `RESTART_STARTUP_TIMEOUT`（既定180秒） |
 
 放っておいても `RESTART_SEQUENCE_TIMEOUT`（既定900秒）で打ち切られ、
 `failed` になって操作を受け付けるようになる。それより早く戻したいときに上の解除を使う。
