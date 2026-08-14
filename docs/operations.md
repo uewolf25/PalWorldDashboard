@@ -93,21 +93,40 @@ sudo cat /var/lib/dashboard-Pal/schedules.json | python3 -m json.tool
 LinuxGSM は journald ではなく自前のログファイルに書く。**`${rootdir}` は
 LinuxGSM を導入したユーザの home**（この環境では `/home/mntuser`）。
 
-| 何 | 標準の場所 |
+| 何 | 場所 |
 |---|---|
-| ゲームのコンソール出力 | `~/log/console/pwserver-console.log` |
-| LinuxGSM の動作ログ | `~/log/script/pwserver-script.log` |
-| ゲーム側のログ | `~/log/game/` |
-| Palworld (Unreal) のログ | `~/serverfiles/Pal/Saved/Logs/Pal.log` |
+| **ゲームのコンソール出力（現行）** | `~/log/console/pwserver-console.log` |
+| 同（起動ごとに保存される） | `~/log/console/pwserver-console-YYYY-MM-DD-HH:MM:SS.log` |
+| **LinuxGSM の動作ログ（現行）** | `~/log/script/pwserver-script.log` |
+| 同（起動ごと） | `~/log/script/pwserver-script-YYYY-MM-DD-HH:MM:SS.log` |
+| LinuxGSM のアラート | `~/log/script/pwserver-alert.log` |
+| steamcmd（アップデート）のログ | `~/log/script/pwserver-steamcmd.log` |
+| tmux ソケット | `/tmp/tmux-<uid>/pwserver-<8桁の乱数>` |
 | LinuxGSM の設定 | `~/lgsm/config-lgsm/pwserver/common.cfg` / `pwserver.cfg` |
 | ゲーム本体 | `~/serverfiles/` |
 | `PalWorldSettings.ini` | `~/serverfiles/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini` |
 
-版によって差があるので、実機では次で確認すること。
+Palworld (Unreal) 自身のログ（`~/serverfiles/Pal/Saved/Logs/`）は
+この構成では出ていない。コンソール出力の方を見ること。
+
+**tmux セッションを直接触らないこと。** ソケット名は起動のたびに変わり、
+LinuxGSM が自分で控えている。起動・停止は必ず `pwserver` 経由にする。
 
 ```bash
-find ~/log ~/serverfiles/Pal/Saved/Logs -name '*.log' -printf '%TY-%Tm-%Td %10s  %p\n' 2>/dev/null | sort -r
+find ~/log -name '*.log' -printf '%TY-%Tm-%Td %10s  %p\n' | sort -r | head -20
+tail -f ~/log/console/pwserver-console.log
+ls -la /tmp/tmux-$(id -u)/
 ```
+
+> **`-servername=` に注意。** LinuxGSM は起動パラメータに
+> `-servername='...'` を渡す（`~/lgsm/config-lgsm/pwserver/pwserver.cfg` の
+> `startparameters`）。ini の `ServerName` を管理ツールから変えても、
+> こちらが優先されて反映されないことがある。
+>
+> ```bash
+> grep -n "startparameters" ~/lgsm/config-lgsm/pwserver/*.cfg
+> pgrep -af PalServer-Linux-Shipping
+> ```
 
 **ログ画面に流すなら `LOG_SOURCE=file` + `LOG_FILE=<console ログのパス>` にする。**
 LinuxGSM 構成で `LOG_SOURCE=journald` のままだと、存在しないユニットを tail し続けて
@@ -166,7 +185,7 @@ sudo grep -E "PrivateTmp|ProtectHome|ReadWritePaths" /etc/systemd/system/dashboa
 
 | 設定 | 症状 |
 |---|---|
-| `PrivateTmp=true` | tmux のソケットが `/tmp` にあるため、管理ツールから見える `/tmp` が別物になる。**SSH から起動したセッションを掴めず、停止も状態確認もすれ違う**。`false` にすること |
+| `PrivateTmp=true` | tmux のソケット（`/tmp/tmux-<uid>/pwserver-<乱数>`）が見えなくなる。管理ツールから見える `/tmp` が別の名前空間になるため、**SSH から起動したセッションを掴めず、停止も状態確認もすれ違う**。`false` にすること |
 | `ReadWritePaths` が ini のディレクトリだけ | LinuxGSM は rootdir 配下にログ・ロック・serverfiles を書く。`ReadWritePaths=/home/mntuser` まで開けること |
 
 tmux のソケットがどこにあるかは次で確認できる。
