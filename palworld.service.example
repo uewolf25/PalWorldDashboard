@@ -1,0 +1,57 @@
+# Palworld 専用サーバの systemd ユニットの雛形。
+#
+# 管理ツールはゲームサーバを systemd ユニットとして操作する前提で作られている。
+# ユニットが無い構成（スクリプトで直接常駐させている等）だと、起動 / 停止 / 再起動 /
+# 予約 / 設定変更の予約反映 / ログ画面のサーバ側ログが、まとめて機能しない。
+#
+#   sudo install -o root -g root -m 644 palworld.service.example \
+#       /etc/systemd/system/palworld.service
+#   sudo nano /etc/systemd/system/palworld.service   # ★ の3箇所を自分の環境に直す
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now palworld
+#   systemctl status palworld
+#
+# ユニット名を変えるなら、/etc/dashboard-Pal.env の PAL_SERVICE_NAME と
+# /etc/sudoers.d/dashboard-Pal の4行も同じ名前に揃えること。
+
+[Unit]
+Description=Palworld Dedicated Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ★ SteamCMD で導入したユーザに合わせる（`ls -ld` で所有者を確認する）
+User=steam
+Group=steam
+
+# ★ SteamCMD の導入先に合わせる。`ls -d /home/*/Steam/steamapps/common/PalServer` で確認
+WorkingDirectory=/home/steam/Steam/steamapps/common/PalServer
+ExecStart=/home/steam/Steam/steamapps/common/PalServer/PalServer.sh
+
+# 自動再起動はしない。
+# 管理ツールは shutdown API でプロセスを落としてから systemctl を叩くので、
+# 自動再起動が有効だとその隙間で systemd が起動し直し、PalWorldSettings.ini の
+# 書き換えと競合する。落ちたままにしない役目は管理ツール側が持っている
+# （停止に失敗しても起動を試みる rescue_start）。
+Restart=no
+
+# ワールド保存の途中で SIGKILL されるとセーブが壊れる。
+# 管理ツール側の RESTART_SHUTDOWN_GRACE と揃えておくこと。
+TimeoutStopSec=300
+
+# PalServer.sh はラッパーで、実体は PalServer-Linux-Shipping。
+# 既定の KillMode=control-group なら cgroup 内の全プロセスに signal が届くので、
+# ラッパーだけ残る取りこぼしは起きない（明示はしない＝既定のままにする）。
+#
+# 停止シグナルを SIGINT にしている構成も多い。ただし管理ツールは先に REST API の
+# shutdown で行儀よく落とすため、ここは到達しない経路の保険でしかない。
+# 変えるなら、実際にセーブが壊れないことを確かめてから。
+#   KillSignal=SIGINT
+
+# 同時接続が増えるとファイルディスクリプタが足りなくなる
+LimitNOFILE=100000
+
+[Install]
+WantedBy=multi-user.target

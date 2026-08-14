@@ -99,15 +99,26 @@ class Settings:
     pal_service_name: str = field(
         default_factory=lambda: _env("PAL_SERVICE_NAME", "palworld.service")
     )
-    # systemd / mock。mock は開発用で、モックサーバを起動/停止する
+    # systemd / lgsm / mock / simulated。
+    # mock と simulated は開発用（前者はモックサーバを起動/停止、後者は空回し）
     pal_service_backend: str = field(
         default_factory=lambda: _env("PAL_SERVICE_BACKEND", "systemd")
+    )
+    # lgsm バックエンドで叩く LinuxGSM の管理スクリプト
+    pal_service_command: str = field(
+        default_factory=lambda: _env("PAL_SERVICE_COMMAND", "")
+    )
+    # 起動/停止の待ち時間。systemd 側の TimeoutStopSec より短いと、
+    # 止まりきる前にこちらが諦めてしまう
+    pal_service_timeout: float = field(
+        default_factory=lambda: _env_float("PAL_SERVICE_TIMEOUT", 300.0)
     )
     pal_mock_control_url: str = field(
         default_factory=lambda: _env("PAL_MOCK_CONTROL_URL", "http://127.0.0.1:8212")
     )
     # 専用ユーザで動かす場合、systemctl は sudo 経由でないと実行できない。
-    # sudoers に NOPASSWD で登録したうえで true にする
+    # sudoers に NOPASSWD で登録したうえで true にする。
+    # lgsm バックエンドでは不要（管理ツールと同じユーザで動くため）
     pal_systemctl_sudo: bool = field(
         default_factory=lambda: _env_bool("PAL_SYSTEMCTL_SUDO", False)
     )
@@ -232,6 +243,8 @@ class Settings:
     # journald / file / none
     log_source: str = field(default_factory=lambda: _env("LOG_SOURCE", "journald"))
     log_file: Path = field(default_factory=lambda: Path(_env("LOG_FILE", "/var/log/palworld.log")))
+    # 管理ツール自身のログの詳しさ（journald と画面の両方に効く）
+    log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "INFO"))
 
     # 破壊的操作（kick/ban/shutdown/stop）を実行せず記録だけする
     dry_run: bool = field(default_factory=lambda: _env_bool("PAL_DRY_RUN", False))
@@ -287,6 +300,8 @@ class Settings:
             "pal_admin_password": secret(self.pal_admin_password),
             "pal_service_name": self.pal_service_name,
             "pal_service_backend": self.pal_service_backend,
+            # どちらの経路でサーバを操作しているかを、設定値の目視以外でも辿れるように
+            "pal_service_command": self.pal_service_command,
             "pal_settings_ini": str(self.pal_settings_ini),
             "schedule_timezone": self.schedule_timezone,
             "restart_announce_template": self.restart_announce_template,

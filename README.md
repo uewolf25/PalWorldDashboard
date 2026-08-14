@@ -206,6 +206,11 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 
 - **再起動を二重に走らせない** — `asyncio.Lock` に加えて、直前の再起動からの経過時間でデバウンス（`force: true` で上書き可）。再起動と停止は同じロックを共有する
 - **ワールド保存に失敗したら再起動を中止する** — セーブデータを失わないため。中止はゲーム内と Discord の両方に通知する
+- **サーバを落とす前に、操作できるか確かめる** — systemd 構成ならユニットが `loaded` かと `is-active` が権限で弾かれないか、LinuxGSM 構成なら管理スクリプトを実行できるか。通らなければ shutdown API に進まずに中止する。落としてから気づいても起動し直せないため。中止時は「サーバーは落としていません」と明記して通知する
+- **停止に失敗しても落ちたままにしない** — 停止/再起動コマンドが失敗したら、保留中の設定は書き込まずに起動だけは試みる。結果は `rescue_start` として履歴に残る
+- **特権昇格は避けられるなら使わない** — LinuxGSM 構成では管理ツールと同じユーザで管理スクリプトを呼ぶため sudo を通さない。sudoers の設定ミスという失敗クラスごと無くなる
+- **障害の記録をプロセスと一緒に消さない** — 管理ツール自身のログは画面（メモリ上200行）と stderr の両方に出す。stderr は systemd 経由で journald に入るので、再起動しても `journalctl -u dashboard-Pal` で追える
+- **プロセス制御コマンドの失敗を必ず残す** — 実行したコマンド・終了コード・stderr を記録する。`is-active` だけは画面のポーリングから繰り返し呼ばれるため、成功時は DEBUG に落として journald を埋めない
 - **予告中はキャンセルできる** — 保存・停止に入った後は受け付けない
 - **無告知でサーバを落とさない** — アナウンス文と予告タイミングを API レベルで必須にしている（既定値へのフォールバックなし）
 - **予告の失敗でシーケンスを止めない** — アナウンスが届かなくても保存と停止は続行し、失敗は履歴に残す
@@ -250,7 +255,9 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 ├── .githooks/pre-commit     コミット前に上記を走らせる
 ├── .github/workflows/ci.yml CI（秘密情報 + テスト + JS 構文）
 ├── dashboard-Pal.env.example
-└── dashboard-Pal.service
+├── dashboard-Pal.service    管理ツール自身のユニット
+├── palworld.service.example ゲームサーバ側のユニットの雛形（素の SteamCMD 構成向け）
+└── docs/operations.md       運用メモ（ログの所在と切り分け）
 ```
 
 ## ローカルで動かす（ゲームサーバ不要）
@@ -414,18 +421,19 @@ mise run test
 | ファイル | 内容 |
 |----------|------|
 | `test_dashboard.py` | ステータス、プレイヤー一覧、キック/BAN/UNBAN、ワールド、履歴、操作の認証、秘密情報の伏字化 |
-| `test_restart.py` | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、アナウンス必須化、停止シーケンス、Discord の流量 |
+| `test_restart.py` | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、アナウンス必須化、停止シーケンス、systemctl が通らないときの事前中止と救済起動、Discord の流量 |
 | `test_announce.py` | アナウンス履歴の記録・永続化・上限・フィルタ、送信失敗の記録、サービス操作 |
-| `test_services.py` | モックの稼働状態、起動/停止の反映、到達不能時の判定、停止→編集→起動の一連の流れ |
+| `test_services.py` | モックの稼働状態、起動/停止の反映、到達不能時の判定、事前チェックの合否判定、停止→編集→起動の一連の流れ |
 | `test_settings_ini.py` | ini のパース（引用符内カンマ含む）、更新、バックアップ、復元、不正な内容の拒否、パストラバーサル防止 |
 | `test_settings_schema.py` | 項目の型解釈と書式化、未知キーの型推論、範囲/選択肢の検証、フォーム経由の更新 |
 | `test_check_secrets.py` | 秘密情報の検出漏れと誤検知、実際に起きた流出未遂ケース、対象外リストの肥大防止 |
-| `test_hardening.py` | 実機投入前に潰したリスク（タイムアウト分離、停止待ち、inode 保持、sudo、誤警報抑止、キャッシュ） |
+| `test_hardening.py` | 実機投入前に潰したリスク（タイムアウト分離、停止待ち、inode 保持、sudo と NoNewPrivileges、誤警報抑止、キャッシュ） |
 | `test_settings_form_js.py` | ゲーム設定フォームの入力挙動を node で実行して検証（入力中に要素が作り直されないこと） |
 | `test_auth.py` | トークンの偽造・期限切れ、Cookie の属性、ログアウト、総当たり制限、閲覧と操作の切り分け、パスワードの伏字化 |
 | `test_pending.py` | 稼働中の保存、停止シーケンスでの自動反映、予約への紐づけ、反映失敗時の復旧、永続化 |
 | `test_scheduler.py` | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
 | `test_monitor.py` | メトリクス記録、メモリ閾値アラートと cooldown、サーバ up/down 検知、ログ配信 |
+| `test_logstream_levels.py` | ログ行の区分判定、管理ツール自身のログが stderr（＝journald）にも出ること、LOG_LEVEL の切り替えと不正値の扱い |
 
 ## 本番デプロイ
 
@@ -585,6 +593,31 @@ mntuser ALL=(root) NOPASSWD: /usr/bin/systemctl start palworld.service, \
 sudo -u mntuser sudo -n systemctl is-active palworld.service
 ```
 
+> **`dashboard-Pal.service` に `NoNewPrivileges=true` を足さないこと。**
+> `NoNewPrivileges` は setuid の `sudo` が root に昇格するのを**原理的に**止めるので、
+> sudoers を正しく書いても `start` / `stop` / `restart` / `is-active` が全部
+> こうなる（[issue #28](https://github.com/uewolf25/dashboard-Pal/issues/28)）。
+>
+> ```
+> sudo: The "no new privileges" flag is set, which prevents sudo from running as root.
+> ```
+>
+> 厄介なのは、上の確認コマンドが**通ってしまう**こと。`sudo -u mntuser ...` は
+> ログインシェル経由なのでユニットのサンドボックスを再現しない。
+> サービスと同じ条件で確かめるならこちら。
+>
+> ```bash
+> sudo systemd-run --uid=mntuser --pipe --wait sudo -n systemctl is-active palworld.service
+> ```
+>
+> サンドボックスを優先したい場合は sudo をやめ、polkit で
+> `org.freedesktop.systemd1.manage-units` を `mntuser` に許可する構成へ移す。
+> その場合 `PAL_SYSTEMCTL_SUDO` は `false` のままにする。
+
+なお管理ツールは、再起動/停止シーケンスの冒頭で `systemctl is-active` を1回叩いて
+操作できるか確かめる。通らなければ**ゲームサーバを落とす前に**中止するので、
+設定を間違えていてもサーバが落ちたままになることはない。
+
 管理ツール自体を root で動かす手もある（`dashboard-Pal.service` の `User=` を消す）が、
 権限を絞る意味がなくなるので推奨しない。
 
@@ -607,18 +640,154 @@ sudo usermod -aG systemd-journal mntuser
 sudo -u mntuser journalctl -u palworld.service -n 5    # 読めるか確認
 ```
 
-### 7. ゲームサーバ側のユニットも直す
+### ログはどこに出るか
 
-管理ツールではなく **Palworld 側**の `palworld.service` に手を入れる。
+系統が2つあり、出先が違う。
 
-- `Restart=always` を**外す** — 管理ツールが停止した直後に systemd が再起動をかけ、
-  ini の書き換えと競合する
-- `TimeoutStopSec=300` を**足す** — ワールド保存の途中で SIGKILL されるとセーブが壊れる
+| | 中身 | 見る場所 |
+|---|---|---|
+| 管理ツール自身 | 再起動シーケンスの各ステップ、systemctl の実行と失敗、例外のトレースバック | ログ画面（`app` 区分）と `journalctl -u dashboard-Pal` |
+| ゲームサーバ | `LOG_SOURCE` で指定した取り込み元（既定は `journalctl -u ${PAL_SERVICE_NAME}`） | ログ画面（`server` 区分） |
+
+画面に出るぶんはメモリ上の直近200行だけで、**プロセスを再起動すると消える**。
+後から原因を追うときは journal を見ること。
+
+```bash
+journalctl -u dashboard-Pal --since "2026-08-13 20:00" --until "2026-08-14 00:00"
+journalctl -u dashboard-Pal -f                      # 流しっぱなしで見る
+journalctl -t sudo --since today                    # 誰がどこから systemctl を打ったか
+```
+
+journal が揮発（`/var/log/journal` が無い）だと再起動で消える。永続化するなら:
+
+```bash
+sudo mkdir -p /var/log/journal && sudo systemd-journal-flush
+```
+
+切り分けのときは `LOG_LEVEL=DEBUG` に落とすと、`systemctl is-active` の1件ごとまで出る。
+常用すると journal が埋まるので戻すこと。
+
+### 7. ゲームサーバのプロセス制御
+
+管理ツールではなく **Palworld 側**の話。**ここが噛み合っていないと、サーバ操作・予約・
+設定変更の予約反映・ログ画面のサーバ側ログが、まとめて機能しない。**
+
+まず、ゲームサーバを今なにが動かしているかを確かめる。
+
+```bash
+ls -d ~/lgsm 2>/dev/null && echo "LinuxGSM 構成" || echo "素の構成の可能性"
+```
+
+#### LinuxGSM で動かしている場合 — `lgsm` バックエンド
+
+LinuxGSM は tmux セッションの中でゲームを起動する、それ自体で完結したプロセス管理
+ツール（監視・アップデート・バックアップまで持つ）。**上に systemd を重ねない。**
+重ねると「落ちていたら起こす」役目が LinuxGSM の `monitor` と systemd の `Restart=` の
+二人になり、管理ツールが意図的に止めている最中に横から起こされる。
+
+`/etc/dashboard-Pal.env` にこう書く。
+
+```bash
+PAL_SERVICE_BACKEND=lgsm
+PAL_SERVICE_COMMAND=/home/mntuser/pwserver    # LinuxGSM の管理スクリプト
+```
+
+**sudoers の設定は要らない。** 管理ツールと LinuxGSM が同じユーザで動くので、
+特権昇格を一切使わない（`PAL_SYSTEMCTL_SUDO` は `false` のまま）。
+使わないぶん、`dashboard-Pal.service` に `NoNewPrivileges=true` を足してよくなる。
+
+**`dashboard-Pal.service` のサンドボックスを2箇所ゆるめる必要がある。**
+ここが噛み合っていないと `pwserver start` が黙って失敗する。
+
+```ini
+# LinuxGSM は tmux のソケットを /tmp に作る。true のままだと管理ツールから
+# 見える /tmp が別物になり、SSH から起動したセッションを掴めない（逆も同じ）
+PrivateTmp=false
+
+# LinuxGSM は rootdir 配下にログ・ロック・serverfiles を書く。
+# ini のディレクトリだけ開けても足りない
+ReadWritePaths=/home/mntuser
+```
+
+`ProtectHome=read-only` はそのままでよい（他ユーザの home は保護されたまま）。
+
+ログ画面の取り込み元も変える。LinuxGSM は journald ではなく自前のログに書く。
+
+```bash
+LOG_SOURCE=file
+LOG_FILE=/home/mntuser/log/console/pwserver-console.log
+```
+
+既存の cron（`monitor` やアップデート検知）はそのまま残せるが、
+管理ツールの停止シーケンスと衝突しうる。詳細は [運用メモ](docs/operations.md)。
+
+#### 素の SteamCMD 構成の場合 — `systemd` バックエンド
+
+ユニットが存在するかを確かめる。
+
+```bash
+systemctl status palworld.service
+```
+
+`Unit palworld.service could not be found.` と出たら、**存在しない**。
+`systemctl show` は存在しないユニットにも既定値一式を返すので、存在確認には使えない
+（`Restart=no` / `TimeoutStopUSec=1min 30s` が返っても、それは既定値であって設定ではない）。
+
+#### 存在しない場合 — 作る
+
+ゲームサーバをスクリプトで直接常駐させている構成だと、ここが無い。
+`palworld.service.example` を雛形として置いてある。
+
+```bash
+sudo install -o root -g root -m 644 \
+    /opt/dashboard-Pal/palworld.service.example /etc/systemd/system/palworld.service
+sudo nano /etc/systemd/system/palworld.service   # ★ の箇所を自分の環境に直す
+sudo systemctl daemon-reload
+sudo systemctl enable --now palworld
+systemctl status palworld
+```
+
+`User` と `WorkingDirectory` / `ExecStart` は SteamCMD の導入先に合わせる。
+
+```bash
+ls -d /home/*/Steam/steamapps/common/PalServer            # 導入先
+ls -ld /home/steam/Steam/steamapps/common/PalServer       # 所有者
+```
+
+**既存の起動スクリプトがあるなら、systemd を呼ぶ薄いラッパーに直す。**
+両方が独立してプロセスを起動すると二重管理になる。
+
+```
+pwserver start   →  sudo systemctl start palworld.service
+pwserver stop    →  sudo systemctl stop palworld.service
+update-watch.sh  →  systemctl stop → steamcmd +app_update → systemctl start
+```
+
+#### 存在する場合 — 2箇所を直す
 
 ```bash
 sudo systemctl edit --full palworld.service
 sudo systemctl daemon-reload
 ```
+
+- `Restart=always` を**外す** — 管理ツールが停止した直後に systemd が再起動をかけ、
+  ini の書き換えと競合する。加えて、管理ツールは shutdown API でプロセスを落としてから
+  `systemctl` を叩くので、外し忘れていると**その隙間で systemd が勝手に起動し直す**。
+  ログ上は再起動が失敗しているのにサーバは動いている、という読みにくい状態になる
+- `TimeoutStopSec=300` を**足す** — ワールド保存の途中で SIGKILL されるとセーブが壊れる
+
+#### ユニット名を揃える
+
+ユニット名は3箇所で一致している必要がある。ずれていると全操作が失敗する。
+
+| 場所 | 値 |
+|---|---|
+| `/etc/systemd/system/` のファイル名 | `palworld.service` |
+| `/etc/dashboard-Pal.env` の `PAL_SERVICE_NAME` | `palworld.service` |
+| `/etc/sudoers.d/dashboard-Pal` の4行 | `palworld.service` |
+
+管理ツールは再起動/停止シーケンスの冒頭でこれを検証し、
+`LoadState` が `loaded` でなければ**サーバを落とす前に**中止する。
 
 ### 移行前チェックリスト
 

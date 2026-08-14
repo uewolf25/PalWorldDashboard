@@ -27,7 +27,7 @@ from .auth import (
 )
 from .cache import TTLCache
 from .config import Settings, load_settings
-from .logstream import BrokerLogHandler, LogBroker
+from .logstream import BrokerLogHandler, LogBroker, configure_logging
 from .monitor import Monitor
 from .notify import DiscordNotifier
 from .palapi import PalApiError, PalworldClient
@@ -188,6 +188,10 @@ def create_app(
     """
     cfg = settings or load_settings()
 
+    if start_background:
+        # テストでは付けない。pytest の捕捉と二重になるだけで得が無い
+        configure_logging(cfg.log_level)
+
     pal = pal_client or PalworldClient(
         cfg.pal_base_url,
         cfg.pal_admin_user,
@@ -202,6 +206,8 @@ def create_app(
         dry_run=cfg.dry_run,
         mock_control_url=cfg.pal_mock_control_url,
         use_sudo=cfg.pal_systemctl_sudo,
+        command=cfg.pal_service_command,
+        timeout=cfg.pal_service_timeout,
     )
     ini_store = SettingsIniStore(cfg.pal_settings_ini, cfg.backup_dir, keep=cfg.backup_keep)
     world_store = WorldStore(
@@ -317,9 +323,11 @@ def create_app(
         app_logger = logging.getLogger("app")
         app_logger.addHandler(handler)
         # 既定ではルートの WARNING を継承してしまい、
-        # 再起動シーケンスの INFO ログがハンドラに届かない
+        # 再起動シーケンスの INFO ログがハンドラに届かない。
+        # LOG_LEVEL=DEBUG で立てている場合はそれを潰さない
         previous_level = app_logger.level
-        app_logger.setLevel(logging.INFO)
+        if previous_level == logging.NOTSET or previous_level > logging.INFO:
+            app_logger.setLevel(logging.INFO)
         if start_background:
             monitor.start()
             try:
@@ -826,8 +834,10 @@ def create_app(
         if action not in ("start", "stop", "restart"):
             raise HTTPException(400, "action は start/stop/restart のいずれかです")
         reason = body.reason if body else "手動"
+        logger.info("サーバ操作 %s を実行します (理由: %s)", action, reason)
         result = await getattr(service, action)()
         if not result.ok:
+            logger.warning("サーバ操作 %s に失敗しました: %s", action, result.stderr)
             raise HTTPException(500, result.stderr or "systemctl の実行に失敗しました")
         labels = {"start": "起動", "stop": "停止", "restart": "再起動"}
         await announcer.discord_only(

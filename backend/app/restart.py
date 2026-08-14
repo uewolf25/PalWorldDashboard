@@ -64,6 +64,14 @@ class RestartDebounced(RuntimeError):
     pass
 
 
+class ServiceControlUnavailable(RuntimeError):
+    """systemctl が通らないと分かったので、サーバを落とす前に中止した。
+
+    落としてから気づいても起動し直せないので、これだけは
+    「サーバは無事」という前提で報告してよい失敗になる。
+    """
+
+
 def validate_request(message: str, offsets: list[float] | tuple[float, ...] | None) -> tuple[float, ...]:
     """アナウンス文と予告タイミングを検証して、降順の offsets を返す。"""
     if not message or not message.strip():
@@ -325,7 +333,30 @@ class RestartManager:
                 # --- 停止 → 保留中の設定変更を反映 → （再起動なら）起動 ---
                 self.status.phase = "restarting"
                 self.status.message = f"サーバを{label}しています"
-                await self._shutdown(mode, schedule_id)
+                try:
+                    await self._shutdown(mode, schedule_id)
+                except ServiceControlUnavailable as exc:
+                    # サーバはまだ落としていない。ここは「失敗」ではあるが
+                    # 被害ゼロなので、そうと分かる書き方にする
+                    self.status.phase = "failed"
+                    self.status.message = (
+                        f"サーバを操作できないため{label}を中止しました"
+                        "（サーバは動いたままです）"
+                    )
+                    self.status.finished_at = time.time()
+                    await self._announcer.send(
+                        f"サーバーの操作ができないため{label}を取りやめました。",
+                        source=mode,
+                        reason=reason,
+                    )
+                    await self._announcer.discord_only(
+                        f"サーバー{label}を中止しました",
+                        f"systemctl を実行できませんでした。**サーバーは落としていません。**\n{exc}",
+                        source=mode,
+                        level="crit",
+                        reason=reason,
+                    )
+                    return
 
                 self.status.phase = "done"
                 self.status.message = f"{label}が完了しました"
@@ -432,6 +463,16 @@ class RestartManager:
     async def _shutdown(self, mode: Mode, schedule_id: str | None = None) -> None:
         label = MODE_LABELS.get(mode, mode)
 
+        # shutdown API を通すとゲームサーバは落ちる。そこから先で systemctl が
+        # 通らないと分かっても、起動し直す手段が無いまま落ちたままになる。
+        # 引き返せるうちに、サービスを操作できるかどうかだけ確かめておく
+        if self.use_systemd:
+            check = await self._service.preflight()
+            if not check.ok:
+                reason = check.stderr or check.stdout or "詳細不明"
+                self._step("preflight", ok=False, detail=reason)
+                raise ServiceControlUnavailable(reason)
+
         # ここから先はこちらの意思で落とすので、「応答なし」の通知を止める。
         # 停止待ち + 設定反映 + 起動 + 起動しきるまで、をまとめて覆う長さにする
         self._suppress_downtime(
@@ -470,13 +511,16 @@ class RestartManager:
             self._step("systemctl_restart", ok=result.ok, detail=result.stdout or result.stderr)
             self._suppress_downtime(self.alert_grace)
             if not result.ok:
-                raise RuntimeError(f"再起動に失敗: {result.stderr}")
+                raise RuntimeError(f"再起動に失敗: {result.stderr}{await self._rescue_start()}")
             return
 
         result = await self._service.stop()
         self._step("systemctl_stop", ok=result.ok, detail=result.stdout or result.stderr)
         if not result.ok:
-            raise RuntimeError(f"停止に失敗: {result.stderr}")
+            # 止まったのか確認できていないので ini は書かない。稼働中に書いても
+            # 終了時にゲーム側のメモリ上の設定で上書きされるだけで、事故になる。
+            # 保留は残るので次の停止機会に回る
+            raise RuntimeError(f"停止に失敗: {result.stderr}{await self._rescue_start()}")
 
         await self._apply_pending_changes(schedule_id)
 
@@ -489,6 +533,21 @@ class RestartManager:
         self._suppress_downtime(self.alert_grace)
         if not result.ok:
             raise RuntimeError(f"起動に失敗: {result.stderr}")
+
+    async def _rescue_start(self) -> str:
+        """systemctl での再起動/停止に失敗したあと、起動だけでも試す。
+
+        shutdown API は既に通してあるのでゲームサーバは落ちている。ここで
+        諦めると、誰も気づかないまま朝まで落ちたままになる（issue #28）。
+        失敗報告に足す文字列を返す。
+        """
+        result = await self._service.start()
+        self._step("rescue_start", ok=result.ok, detail=result.stdout or result.stderr)
+        # 起動コマンドが通っても実機が受け付けるまでは時間がかかる
+        self._suppress_downtime(self.alert_grace)
+        if result.ok:
+            return "\nサーバの起動だけは試みて、そちらは通りました。"
+        return f"\nサーバの起動も試みましたが失敗しました: {result.stderr}"
 
     def _has_pending(self, schedule_id: str | None) -> bool:
         if self._apply_pending is None or self._count_pending is None:

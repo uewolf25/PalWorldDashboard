@@ -14,6 +14,8 @@ import asyncio
 
 import pytest
 
+from app.services import CommandResult
+
 # テストでは予告間隔を潰す
 FAST = [0.06, 0.03, 0.01]
 MSG = "サーバーは{time}後に再起動します。"
@@ -345,3 +347,105 @@ async def test_advance_notice_mentions_pending_settings(client, app, notifier):
 
     app.state.restart.cancel()
     await app.state.restart.wait()
+
+
+# ---- systemctl が通らないとき（issue #28） ---------------------------------
+
+NNP_STDERR = (
+    'sudo: The "no new privileges" flag is set, '
+    "which prevents sudo from running as root."
+)
+
+
+class BrokenService:
+    """systemctl が一切通らないサービス。
+
+    実機で NoNewPrivileges=true と PAL_SYSTEMCTL_SUDO=true が同居していた
+    ときの再現。sudoers を正しく書いても sudo が昇格できず全滅する。
+    """
+
+    def __init__(self, *, preflight_ok: bool = False) -> None:
+        self.preflight_ok = preflight_ok
+        self.calls: list[str] = []
+
+    def _fail(self, action: str) -> CommandResult:
+        self.calls.append(action)
+        return CommandResult(False, 1, "", NNP_STDERR)
+
+    async def preflight(self) -> CommandResult:
+        self.calls.append("preflight")
+        if self.preflight_ok:
+            return CommandResult(True, 0, "active", "")
+        return CommandResult(False, 1, "", NNP_STDERR)
+
+    async def start(self) -> CommandResult:
+        return self._fail("start")
+
+    async def stop(self) -> CommandResult:
+        return self._fail("stop")
+
+    async def restart(self) -> CommandResult:
+        return self._fail("restart")
+
+    async def is_active(self) -> bool | None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_sequence_aborts_before_shutting_the_server_down(client, app, mock_state):
+    """systemctl が通らないと分かった時点で、サーバを落とさずに止まること。
+
+    落としてから気づくと起動し直せず、朝まで落ちたままになる。
+    """
+    service = BrokenService()
+    app.state.restart._service = service
+
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    assert status.phase == "failed"
+    # ここが本丸: ゲームサーバには一切手を出していない
+    assert mock_state.shutdowns == []
+    assert mock_state.running is True
+
+    step_names = [s["name"] for s in status.steps]
+    assert "preflight" in step_names
+    assert "shutdown_api" not in step_names
+    assert service.calls == ["preflight"]
+
+
+async def test_aborted_sequence_says_the_server_is_still_up(client, app, notifier):
+    """「失敗」だけ届くと、落ちたのかどうか分からず現地確認になる。"""
+    app.state.restart._service = BrokenService()
+
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    assert "サーバは動いたまま" in app.state.restart.status.message
+    crit = [e for e in notifier.sent if e.get("level") == "crit"]
+    assert crit and "落としていません" in crit[-1]["description"]
+
+
+async def test_failed_restart_still_tries_to_bring_the_server_back(client, app, mock_state):
+    """停止まで進んでしまったら、起動だけでも試すこと。
+
+    shutdown API は通っているのでサーバは既に落ちている。ここで諦めると
+    落ちたままになるので、systemctl start に望みを託す。
+    """
+    service = BrokenService(preflight_ok=True)
+    app.state.restart._service = service
+
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    assert status.phase == "failed"
+    assert mock_state.shutdowns  # ここまでは進んでいる
+
+    step_names = [s["name"] for s in status.steps]
+    assert "systemctl_restart" in step_names
+    assert "rescue_start" in step_names
+    assert service.calls == ["preflight", "restart", "start"]
