@@ -206,10 +206,11 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 
 - **再起動を二重に走らせない** — `asyncio.Lock` に加えて、直前の再起動からの経過時間でデバウンス（`force: true` で上書き可）。再起動と停止は同じロックを共有する
 - **ワールド保存に失敗したら再起動を中止する** — セーブデータを失わないため。中止はゲーム内と Discord の両方に通知する
-- **サーバを落とす前に systemctl が通るか確かめる** — `systemctl is-active` を1回叩き、権限で弾かれるなら shutdown API に進まずに中止する。落としてから気づいても起動し直せないため。中止時は「サーバーは落としていません」と明記して通知する
-- **停止に失敗しても落ちたままにしない** — `systemctl stop` / `restart` が失敗したら、保留中の設定は書き込まずに `systemctl start` だけは試みる。結果は `rescue_start` として履歴に残る
+- **サーバを落とす前に、操作できるか確かめる** — systemd 構成ならユニットが `loaded` かと `is-active` が権限で弾かれないか、LinuxGSM 構成なら管理スクリプトを実行できるか。通らなければ shutdown API に進まずに中止する。落としてから気づいても起動し直せないため。中止時は「サーバーは落としていません」と明記して通知する
+- **停止に失敗しても落ちたままにしない** — 停止/再起動コマンドが失敗したら、保留中の設定は書き込まずに起動だけは試みる。結果は `rescue_start` として履歴に残る
+- **特権昇格は避けられるなら使わない** — LinuxGSM 構成では管理ツールと同じユーザで管理スクリプトを呼ぶため sudo を通さない。sudoers の設定ミスという失敗クラスごと無くなる
 - **障害の記録をプロセスと一緒に消さない** — 管理ツール自身のログは画面（メモリ上200行）と stderr の両方に出す。stderr は systemd 経由で journald に入るので、再起動しても `journalctl -u dashboard-Pal` で追える
-- **systemctl の失敗を必ず残す** — 実行したコマンド・終了コード・stderr を記録する。`is-active` だけは画面のポーリングから繰り返し呼ばれるため、成功時は DEBUG に落として journald を埋めない
+- **プロセス制御コマンドの失敗を必ず残す** — 実行したコマンド・終了コード・stderr を記録する。`is-active` だけは画面のポーリングから繰り返し呼ばれるため、成功時は DEBUG に落として journald を埋めない
 - **予告中はキャンセルできる** — 保存・停止に入った後は受け付けない
 - **無告知でサーバを落とさない** — アナウンス文と予告タイミングを API レベルで必須にしている（既定値へのフォールバックなし）
 - **予告の失敗でシーケンスを止めない** — アナウンスが届かなくても保存と停止は続行し、失敗は履歴に残す
@@ -255,7 +256,8 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 ├── .github/workflows/ci.yml CI（秘密情報 + テスト + JS 構文）
 ├── dashboard-Pal.env.example
 ├── dashboard-Pal.service    管理ツール自身のユニット
-└── palworld.service.example ゲームサーバ側のユニットの雛形（無い環境向け）
+├── palworld.service.example ゲームサーバ側のユニットの雛形（素の SteamCMD 構成向け）
+└── docs/operations.md       運用メモ（ログの所在と切り分け）
 ```
 
 ## ローカルで動かす（ゲームサーバ不要）
@@ -665,12 +667,51 @@ sudo mkdir -p /var/log/journal && sudo systemd-journal-flush
 切り分けのときは `LOG_LEVEL=DEBUG` に落とすと、`systemctl is-active` の1件ごとまで出る。
 常用すると journal が埋まるので戻すこと。
 
-### 7. ゲームサーバ側のユニット
+### 7. ゲームサーバのプロセス制御
 
-管理ツールではなく **Palworld 側**の話。**ここが無いと、サーバ操作・予約・
+管理ツールではなく **Palworld 側**の話。**ここが噛み合っていないと、サーバ操作・予約・
 設定変更の予約反映・ログ画面のサーバ側ログが、まとめて機能しない。**
 
-まず、ユニットが存在するかを確かめる。
+まず、ゲームサーバを今なにが動かしているかを確かめる。
+
+```bash
+ls -d ~/lgsm 2>/dev/null && echo "LinuxGSM 構成" || echo "素の構成の可能性"
+```
+
+#### LinuxGSM で動かしている場合 — `lgsm` バックエンド
+
+LinuxGSM は tmux セッションの中でゲームを起動する、それ自体で完結したプロセス管理
+ツール（監視・アップデート・バックアップまで持つ）。**上に systemd を重ねない。**
+重ねると「落ちていたら起こす」役目が LinuxGSM の `monitor` と systemd の `Restart=` の
+二人になり、管理ツールが意図的に止めている最中に横から起こされる。
+
+`/etc/dashboard-Pal.env` にこう書く。
+
+```bash
+PAL_SERVICE_BACKEND=lgsm
+PAL_SERVICE_COMMAND=/home/mntuser/pwserver    # LinuxGSM の管理スクリプト
+```
+
+**sudoers の設定は要らない。** 管理ツールと LinuxGSM が同じユーザで動くので、
+特権昇格を一切使わない（`PAL_SYSTEMCTL_SUDO` は `false` のまま）。
+
+管理ツールは LinuxGSM を書き換えるので、サンドボックスの穴を開ける必要がある。
+`dashboard-Pal.service` の `ReadWritePaths` に LinuxGSM の置き場を足すこと
+（`ProtectHome=read-only` が効いているため）。
+
+ログ画面の取り込み元も変える。LinuxGSM は journald ではなく自前のログに書く。
+
+```bash
+LOG_SOURCE=file
+LOG_FILE=/home/mntuser/log/console/pwserver-console.log
+```
+
+既存の cron（`monitor` やアップデート検知）はそのまま残せるが、
+管理ツールの停止シーケンスと衝突しうる。詳細は [運用メモ](docs/operations.md)。
+
+#### 素の SteamCMD 構成の場合 — `systemd` バックエンド
+
+ユニットが存在するかを確かめる。
 
 ```bash
 systemctl status palworld.service
@@ -723,7 +764,7 @@ sudo systemctl daemon-reload
   ログ上は再起動が失敗しているのにサーバは動いている、という読みにくい状態になる
 - `TimeoutStopSec=300` を**足す** — ワールド保存の途中で SIGKILL されるとセーブが壊れる
 
-#### 名前を揃える
+#### ユニット名を揃える
 
 ユニット名は3箇所で一致している必要がある。ずれていると全操作が失敗する。
 

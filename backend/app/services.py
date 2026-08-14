@@ -11,13 +11,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
 import shutil
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# LinuxGSM は端末向けに色を付けて出力する。ログに残す前に落とす
+_ANSI = re.compile(r"\x1B\[[0-9;]*[a-zA-Z]")
 
 # `systemctl is-active` が非ゼロで返すが、コマンド自体は通っている状態。
 # ユニットが動いていないだけなので、事前チェックとしては成功扱いにする
@@ -289,6 +295,117 @@ class MockGameService:
             return None
 
 
+class LgsmService:
+    """LinuxGSM の管理スクリプト経由でゲームサーバを操作する。
+
+    LinuxGSM は tmux セッションの中でゲームを起動する、それ自体で完結した
+    プロセス管理ツール（監視・アップデート・バックアップまで持つ）。
+    上に systemd を重ねると「落ちてたら起こす」役目が二人になり、
+    どちらかを無効化する調整が要る。ここでは重ねずに直接呼ぶ。
+
+    管理ツールと LinuxGSM が同じユーザで動く前提なので、特権昇格は使わない。
+    issue #28 は sudo の設定ミスで起きたので、その失敗クラスごと無くす。
+    """
+
+    def __init__(
+        self,
+        command: str,
+        *,
+        dry_run: bool = False,
+        timeout: float = 300.0,
+    ) -> None:
+        self.command = command
+        self.dry_run = dry_run
+        self.timeout = timeout
+
+    async def _run(self, action: str) -> CommandResult:
+        printable = f"{self.command} {action}"
+        if self.dry_run:
+            logger.info("%s をスキップ (dry_run)", printable)
+            return CommandResult(True, 0, f"[simulated] {printable}", "", simulated=True)
+
+        logger.info("%s を実行します", printable)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.command,
+                action,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            logger.warning("%s を起動できません: %s", printable, exc)
+            return CommandResult(False, -1, "", f"{self.command} を実行できません: {exc}")
+
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            logger.warning("%s が %.0f 秒でタイムアウトしました", printable, self.timeout)
+            return CommandResult(False, -1, "", f"{printable} がタイムアウトしました")
+
+        # LinuxGSM は端末向けに色を付けて出力するので、記録する前に落とす
+        stdout = _ANSI.sub("", out.decode(errors="replace")).strip()
+        stderr = _ANSI.sub("", err.decode(errors="replace")).strip()
+        if proc.returncode == 0:
+            logger.info("%s が完了しました", printable)
+        else:
+            logger.warning(
+                "%s が失敗しました (rc=%s): %s",
+                printable, proc.returncode, stderr or stdout or "(出力なし)",
+            )
+        return CommandResult(
+            ok=proc.returncode == 0,
+            returncode=proc.returncode or 0,
+            stdout=stdout,
+            # LinuxGSM は失敗の理由も stdout に書くことがあるので拾っておく
+            stderr=stderr or (stdout if proc.returncode != 0 else ""),
+        )
+
+    async def start(self) -> CommandResult:
+        return await self._run("start")
+
+    async def stop(self) -> CommandResult:
+        return await self._run("stop")
+
+    async def restart(self) -> CommandResult:
+        return await self._run("restart")
+
+    async def preflight(self) -> CommandResult:
+        """管理スクリプトを実行できるかだけ確かめる。
+
+        LinuxGSM のサブコマンドは種類によって数十秒かかるうえ、
+        `monitor` のように副作用のあるものもある。サーバを落とす前に
+        知りたいのは「呼べるかどうか」なので、ここでは叩かない。
+        """
+        if self.dry_run:
+            return CommandResult(True, 0, "[simulated] preflight", "", simulated=True)
+        path = Path(self.command)
+        if not self.command:
+            return CommandResult(
+                False, 1, "", "PAL_SERVICE_COMMAND が空です（LinuxGSM の管理スクリプトのパス）"
+            )
+        if not path.is_file():
+            return CommandResult(
+                False, 1, "", f"{self.command} がありません。PAL_SERVICE_COMMAND を確認してください"
+            )
+        if not os.access(path, os.X_OK):
+            return CommandResult(
+                False, 1, "", f"{self.command} に実行権限がありません（管理ツールと同じユーザで実行できること）"
+            )
+        return CommandResult(True, 0, f"{self.command} を実行できます", "")
+
+    async def is_active(self) -> bool | None:
+        """LinuxGSM には機械可読な状態問い合わせが無いので「分からない」を返す。
+
+        `details` の出力を読む手もあるが、書式が版で変わるうえ遅い。
+        稼働判定は REST API の到達性に委ねる（呼び出し側がそう作られている）。
+        """
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
 class SimulatedService:
     """何もせず成功を返す（テストと動作確認用）。
 
@@ -341,6 +458,8 @@ def build_service(
     dry_run: bool,
     mock_control_url: str,
     use_sudo: bool = False,
+    command: str = "",
+    timeout: float = 300.0,
 ) -> GameService:
     if backend == "mock":
         logger.info("ゲームサーバの制御にモックバックエンドを使います: %s", mock_control_url)
@@ -348,4 +467,10 @@ def build_service(
     if backend == "simulated":
         logger.info("ゲームサーバの制御を空回しします（simulated）")
         return SimulatedService(unit)
-    return SystemdService(unit, dry_run=dry_run, use_sudo=use_sudo)
+    if backend == "lgsm":
+        logger.info("ゲームサーバの制御に LinuxGSM を使います: %s", command)
+        return LgsmService(command, dry_run=dry_run, timeout=timeout)
+    logger.info(
+        "ゲームサーバの制御に systemd を使います: %s (sudo=%s)", unit, use_sudo
+    )
+    return SystemdService(unit, dry_run=dry_run, use_sudo=use_sudo, timeout=timeout)

@@ -10,7 +10,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.services import MockGameService, SimulatedService, SystemdService, build_service
+from app.services import (
+    LgsmService,
+    MockGameService,
+    SimulatedService,
+    SystemdService,
+    build_service,
+)
 from mock import mock_palworld
 
 
@@ -109,10 +115,14 @@ async def test_systemd_is_simulated_without_systemctl():
     ("mock", MockGameService),
     ("simulated", SimulatedService),
     ("systemd", SystemdService),
+    ("lgsm", LgsmService),
     ("", SystemdService),          # 未指定は systemd
 ])
 def test_build_service_selects_backend(backend, expected):
-    service = build_service(backend, unit="x.service", dry_run=False, mock_control_url="http://h")
+    service = build_service(
+        backend, unit="x.service", dry_run=False, mock_control_url="http://h",
+        command="/home/mntuser/pwserver",
+    )
     assert isinstance(service, expected)
 
 
@@ -318,3 +328,100 @@ async def test_polling_is_active_does_not_flood_the_log(fake_systemctl, caplog):
         await service.is_active()
 
     assert caplog.text == ""
+
+
+# ---- LinuxGSM バックエンド --------------------------------------------------
+
+
+@pytest.fixture
+def lgsm_script(tmp_path):
+    """実行可能な LinuxGSM 管理スクリプトの代役。"""
+    path = tmp_path / "pwserver"
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+async def test_lgsm_runs_the_management_script(lgsm_script):
+    from app.services import LgsmService
+
+    service = LgsmService(str(lgsm_script))
+    for action in (service.start, service.stop, service.restart):
+        assert (await action()).ok is True
+
+
+async def test_lgsm_needs_no_privilege_escalation(lgsm_script, monkeypatch):
+    """issue #28 の原因クラスを消すのが狙い。sudo を挟まないこと。"""
+    import asyncio
+
+    seen: list[tuple] = []
+
+    async def spy(*args, **kwargs):
+        seen.append(args)
+        return _FakeProc(0, "", "")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+
+    from app.services import LgsmService
+
+    await LgsmService(str(lgsm_script)).stop()
+    assert seen == [(str(lgsm_script), "stop")]
+    assert "sudo" not in " ".join(seen[0])
+
+
+async def test_lgsm_preflight_fails_when_the_script_is_missing(tmp_path):
+    from app.services import LgsmService
+
+    service = LgsmService(str(tmp_path / "nope"))
+    result = await service.preflight()
+    assert result.ok is False
+    assert "PAL_SERVICE_COMMAND" in result.stderr
+
+
+async def test_lgsm_preflight_fails_without_execute_permission(lgsm_script):
+    """管理ツールと別ユーザで置かれていると、落としてから起動できなくなる。"""
+    from app.services import LgsmService
+
+    lgsm_script.chmod(0o644)
+    result = await LgsmService(str(lgsm_script)).preflight()
+    assert result.ok is False
+    assert "実行権限" in result.stderr
+
+
+async def test_lgsm_preflight_does_not_touch_the_server(lgsm_script, monkeypatch):
+    """LinuxGSM の monitor は副作用がある。事前チェックで叩いてはいけない。"""
+    import asyncio
+
+    async def boom(*args, **kwargs):  # pragma: no cover - 呼ばれたら失敗
+        raise AssertionError("preflight でスクリプトを実行してはいけない")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", boom)
+
+    from app.services import LgsmService
+
+    assert (await LgsmService(str(lgsm_script)).preflight()).ok is True
+
+
+async def test_lgsm_strips_terminal_colours(lgsm_script, monkeypatch):
+    """LinuxGSM は端末向けに色を付ける。そのままログに残すと読めない。"""
+    import asyncio
+
+    async def coloured(*args, **kwargs):
+        return _FakeProc(1, "\x1b[0;31mFAIL\x1b[0m Starting pwserver", "")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", coloured)
+
+    from app.services import LgsmService
+
+    result = await LgsmService(str(lgsm_script)).start()
+    assert result.ok is False
+    assert "\x1b" not in result.stdout
+    # 失敗の理由が stdout にしか無くても拾う
+    assert "FAIL Starting pwserver" in result.stderr
+
+
+async def test_lgsm_state_is_left_to_the_rest_api(lgsm_script):
+    """details の書式は版で変わる。稼働判定は REST API に委ねる。"""
+    from app.services import LgsmService
+
+    assert await LgsmService(str(lgsm_script)).is_active() is None

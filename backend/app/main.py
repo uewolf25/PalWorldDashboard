@@ -206,6 +206,8 @@ def create_app(
         dry_run=cfg.dry_run,
         mock_control_url=cfg.pal_mock_control_url,
         use_sudo=cfg.pal_systemctl_sudo,
+        command=cfg.pal_service_command,
+        timeout=cfg.pal_service_timeout,
     )
     ini_store = SettingsIniStore(cfg.pal_settings_ini, cfg.backup_dir, keep=cfg.backup_keep)
     world_store = WorldStore(
