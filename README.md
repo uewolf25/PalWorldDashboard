@@ -257,7 +257,8 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 ├── dashboard-Pal.env.example
 ├── dashboard-Pal.service    管理ツール自身のユニット
 ├── palworld.service.example ゲームサーバ側のユニットの雛形（素の SteamCMD 構成向け）
-└── docs/operations.md       運用メモ（ログの所在と切り分け）
+├── docs/operations.md       運用メモ（ログの所在と切り分け）
+└── docs/test-plan.md        テスト仕様書（単体・結合）
 ```
 
 ## ローカルで動かす（ゲームサーバ不要）
@@ -417,6 +418,10 @@ mise run test
 ```
 
 モック API に ASGI 直結で繋ぐので、ポートもネットワークも使わない。
+
+実機での動作確認手順は [テスト仕様書](docs/test-plan.md) にまとめてある。
+**モックでは再現できない領域**（プロセスの寿命・ファイルの所有者・処理にかかる時間・権限）は
+そちらで潰す。
 
 | ファイル | 内容 |
 |----------|------|
