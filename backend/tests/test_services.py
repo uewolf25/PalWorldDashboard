@@ -425,3 +425,26 @@ async def test_lgsm_state_is_left_to_the_rest_api(lgsm_script):
     from app.services import LgsmService
 
     assert await LgsmService(str(lgsm_script)).is_active() is None
+
+
+async def test_an_unknown_backend_is_reported(caplog):
+    """切り戻しで踏みやすい。古い版に lgsm を渡すと黙って systemd に落ちる。"""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="app.services"):
+        service = build_service(
+            "systemdd", unit="x.service", dry_run=False, mock_control_url="http://h"
+        )
+
+    assert isinstance(service, SystemdService)
+    assert "知らない値" in caplog.text
+
+
+async def test_the_default_backend_is_not_reported(caplog):
+    """未指定は systemd が正しい既定なので、警告を出さない。"""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="app.services"):
+        build_service("", unit="x.service", dry_run=False, mock_control_url="http://h")
+
+    assert caplog.text == ""

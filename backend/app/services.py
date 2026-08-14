@@ -470,6 +470,12 @@ def build_service(
     if backend == "lgsm":
         logger.info("ゲームサーバの制御に LinuxGSM を使います: %s", command)
         return LgsmService(command, dry_run=dry_run, timeout=timeout)
+    if backend and backend != "systemd":
+        # 綴り間違いや、この版が知らないバックエンド名。黙って systemd に落ちると
+        # 「設定したつもりの経路と違う」まま動いてしまう（切り戻し時に踏みやすい）
+        logger.warning(
+            "PAL_SERVICE_BACKEND=%r は知らない値です。systemd として扱います", backend
+        )
     logger.info(
         "ゲームサーバの制御に systemd を使います: %s (sudo=%s)", unit, use_sudo
     )
