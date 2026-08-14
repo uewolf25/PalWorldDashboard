@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Literal
 
 from .announce import Announcer, render_template
+from .health import ServerHealth
 from .palapi import PalApiError, PalworldClient
 from .pending import ApplyResult
 from .services import GameService
@@ -123,6 +124,9 @@ class RestartStatus:
     finished_at: float | None = None
     restart_at: float | None = None
     message: str = ""
+    # 起動を見届けた結果。None は「見ていない」（停止シーケンスや失敗時）
+    startup_confirmed: bool | None = None
+    startup_seconds: float | None = None
     steps: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -155,6 +159,8 @@ class RestartStatus:
             "cancellable": self.phase == "announcing",
             # 予告を過ぎた進行中は取り消せない。画面から強制解除できることを伝える
             "releasable": self.active and self.phase != "announcing",
+            "startup_confirmed": self.startup_confirmed,
+            "startup_seconds": self.startup_seconds,
             "message": self.message,
             "steps": self.steps,
         }
@@ -174,15 +180,19 @@ class RestartManager:
         shutdown_grace: float = 120.0,
         poll_interval: float = 1.0,
         sequence_timeout: float = DEFAULT_SEQUENCE_TIMEOUT,
+        health: ServerHealth | None = None,
         use_systemd: bool = True,
         apply_pending: ApplyPending | None = None,
         count_pending: CountPending | None = None,
         suppress_alerts: Callable[[float], None] | None = None,
         alert_grace: float = 180.0,
+        startup_timeout: float = 180.0,
     ) -> None:
         self._pal = pal
         self._announcer = announcer
         self._service = service
+        # 「落ちたか」「上がったか」の判定はここに寄せてある
+        self._health = health or ServerHealth(pal, service, poll_interval=poll_interval)
         # サーバ停止後に保留中の設定変更を反映するフックと、その件数を数えるフック。
         # 件数は「再起動を stop→書き込み→start に分ける必要があるか」の判定に使う
         self._apply_pending = apply_pending
@@ -190,6 +200,10 @@ class RestartManager:
         # 意図的に落としている間の「応答なし」通知を止めるためのフック
         self._suppress_alerts = suppress_alerts
         self.alert_grace = alert_grace
+        # 起動コマンドのあと、サーバが応答を返すまで待つ上限。
+        # 誤警報の抑止時間（alert_grace）とは別にする。片方を伸ばしたいだけで
+        # シーケンスの所要時間まで伸びると困るため
+        self.startup_timeout = startup_timeout
         self.notice_offsets = tuple(sorted((float(o) for o in notice_offsets), reverse=True))
         self.announce_template = announce_template
         self.debounce_sec = debounce_sec
@@ -483,10 +497,23 @@ class RestartManager:
                     )
                 elif applied and applied.get("error"):
                     detail += f"\n⚠️ 設定変更の反映に失敗しました: {applied['error']}"
+                # 起動を見届けたなら復帰までの秒数を添える。見届けられなかった
+                # ときに黙って「完了」とだけ言うと、落ちたままでも気づけない
+                level = "info"
+                if status.startup_confirmed:
+                    detail += f"\n復帰まで {status.startup_seconds:.0f} 秒。"
+                elif status.startup_confirmed is False:
+                    level = "warn"
+                    status.message = f"{label}は完了しましたが、サーバの応答を確認できていません"
+                    detail += (
+                        f"\n⚠️ {humanize(self.startup_timeout)}待ってもサーバが応答しません。"
+                        "起動しているか確認してください。"
+                    )
                 await self._announcer.discord_only(
                     f"サーバー{label}が完了しました",
                     detail,
                     source=mode,
+                    level=level,
                     reason=reason,
                 )
 
@@ -567,37 +594,58 @@ class RestartManager:
         if prev is not None and prev > 0:
             await asyncio.sleep(prev)
 
-    async def _wait_until_down(self, status: RestartStatus) -> None:
+    async def _wait_until_down(self, status: RestartStatus) -> bool:
         """shutdown API を投げたあと、実際に落ちるまで待つ。
+
+        戻り値は「応答が止まるのを見届けられたか」。見届けられた構成なら
+        起動も同じやり方で確かめられる、という判断に使う。
 
         以前は `min(shutdown_waittime, 5)` 秒だけ寝ていたが、
         実機のワールド保存はもっと時間がかかる。待ちが足りないまま
         systemctl stop に進むと、保存中に SIGTERM を送ることになる。
 
         逆に固定で長く寝ると、すぐ落ちた場合に無駄な停止時間が延びる。
-        REST API に到達できなくなった時点を「落ちた」とみなして先へ進む。
-        REST API が無効な構成では判定できないので、その場合は
-        shutdown_waittime を待ってから進む。
+        応答が止まった時点を「落ちた」とみなして先へ進む。
         """
         deadline = self.shutdown_waittime + self.shutdown_grace
         if deadline <= 0:
+            return False
+        elapsed = await self._health.wait_until_down(deadline)
+        if elapsed is None:
+            self._step(
+                status, "wait_until_down", ok=False,
+                detail=f"{deadline:.0f}秒待っても応答が止まりませんでした。停止処理に進みます",
+            )
+            return False
+        self._step(status, "wait_until_down", detail=f"{elapsed:.1f}秒で応答が止まりました")
+        return True
+
+    async def _wait_until_up(self, status: RestartStatus, *, check: bool) -> None:
+        """起動コマンドのあと、実際に遊べるようになるまで待つ。
+
+        起動コマンドはプロセスを起こした時点で返るので、これだけでは
+        「上がった」と言えない。ここまで見て初めて完了を名乗れる
+        （通知に復帰までの秒数を載せられるようにもなる）。
+
+        待ちきれなくてもシーケンスは失敗にしない。コマンドは通っているので、
+        遅れて上がってくることも、REST API を無効にした構成であることもある。
+        確認できなかったことは完了通知にそのまま書く。
+        """
+        if not check:
+            # 停止を見届けられなかった構成（REST API 無効など）では、
+            # 起動も確かめられない。待つだけ無駄なので見に行かない
             return
-
-        loop = asyncio.get_running_loop()
-        end = loop.time() + deadline
-        while loop.time() < end:
-            try:
-                await self._pal.info()
-            except PalApiError:
-                elapsed = deadline - (end - loop.time())
-                self._step(status, "wait_until_down", detail=f"{elapsed:.1f}秒で応答が止まりました")
-                return
-            await asyncio.sleep(min(self.poll_interval, max(0.0, end - loop.time())))
-
-        self._step(
-            status, "wait_until_down", ok=False,
-            detail=f"{deadline:.0f}秒待っても応答が止まりませんでした。停止処理に進みます",
-        )
+        status.message = "サーバが起動するのを待っています"
+        elapsed = await self._health.wait_until_up(self.startup_timeout)
+        status.startup_seconds = elapsed
+        status.startup_confirmed = elapsed is not None
+        if elapsed is None:
+            self._step(
+                status, "wait_until_up", ok=False,
+                detail=f"{self.startup_timeout:.0f}秒待っても応答が返りませんでした",
+            )
+            return
+        self._step(status, "wait_until_up", detail=f"{elapsed:.1f}秒で応答が返りました")
 
     def _suppress_downtime(self, seconds: float) -> None:
         if self._suppress_alerts is not None:
@@ -636,7 +684,7 @@ class RestartManager:
             self._step(status, "systemd_skipped", detail="systemd 未使用（自動再起動に任せる）")
             return
 
-        await self._wait_until_down(status)
+        api_was_up = await self._wait_until_down(status)
 
         if mode == "stop":
             result = await self._service.stop()
@@ -657,6 +705,7 @@ class RestartManager:
             self._suppress_downtime(self.alert_grace)
             if not result.ok:
                 raise RuntimeError(f"再起動に失敗: {result.stderr}{await self._rescue_start(status)}")
+            await self._wait_until_up(status, check=api_was_up)
             return
 
         result = await self._service.stop()
@@ -678,6 +727,7 @@ class RestartManager:
         self._suppress_downtime(self.alert_grace)
         if not result.ok:
             raise RuntimeError(f"起動に失敗: {result.stderr}")
+        await self._wait_until_up(status, check=api_was_up)
 
     async def _rescue_start(self, status: RestartStatus) -> str:
         """systemctl での再起動/停止に失敗したあと、起動だけでも試す。

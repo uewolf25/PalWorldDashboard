@@ -144,12 +144,21 @@ async def test_simulated_service_never_touches_the_host():
 
 
 class _FakeProc:
-    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
-        self.returncode = returncode
-        self._payload = (stdout.encode(), stderr.encode())
+    """`create_subprocess_exec` の代役。
 
-    async def communicate(self):
-        return self._payload
+    実装は標準出力を一時ファイルに受けてプロセスの終了だけを待つ
+    （パイプの EOF を待つと常駐プロセスに握られて戻らない: issue #34）。
+    代役もその形に合わせ、渡されたファイルに書いてから wait() で返す。
+    """
+
+    def __init__(self, returncode: int, out_text: str, err_text: str, **kwargs) -> None:
+        self.returncode = returncode
+        for handle, text in ((kwargs.get("stdout"), out_text), (kwargs.get("stderr"), err_text)):
+            if hasattr(handle, "write"):
+                handle.write(text.encode())
+
+    async def wait(self):
+        return self.returncode
 
     def kill(self):  # pragma: no cover - タイムアウト経路でしか呼ばれない
         pass
@@ -170,8 +179,8 @@ def fake_systemctl(monkeypatch):
         async def fake_exec(*args, **kwargs):
             # ユニットの存在確認は別問い合わせなので、別の応答を返す
             if "show" in args:
-                return _FakeProc(0, f"LoadState={load_state}", "")
-            return _FakeProc(returncode, stdout, stderr)
+                return _FakeProc(0, f"LoadState={load_state}", "", **kwargs)
+            return _FakeProc(returncode, stdout, stderr, **kwargs)
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
@@ -358,7 +367,7 @@ async def test_lgsm_needs_no_privilege_escalation(lgsm_script, monkeypatch):
 
     async def spy(*args, **kwargs):
         seen.append(args)
-        return _FakeProc(0, "", "")
+        return _FakeProc(0, "", "", **kwargs)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
 
@@ -407,7 +416,7 @@ async def test_lgsm_strips_terminal_colours(lgsm_script, monkeypatch):
     import asyncio
 
     async def coloured(*args, **kwargs):
-        return _FakeProc(1, "\x1b[0;31mFAIL\x1b[0m Starting pwserver", "")
+        return _FakeProc(1, "\x1b[0;31mFAIL\x1b[0m Starting pwserver", "", **kwargs)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", coloured)
 
@@ -448,3 +457,78 @@ async def test_the_default_backend_is_not_reported(caplog):
         build_service("", unit="x.service", dry_run=False, mock_control_url="http://h")
 
     assert caplog.text == ""
+
+
+# ---- 常駐プロセスに握られても戻ること（issue #34） -------------------------
+
+
+@pytest.fixture
+def daemonising_script(tmp_path):
+    """自分は終わるが、子を常駐させて標準出力を握らせるスクリプト。
+
+    LinuxGSM の `start` そのもの。ゲームは tmux の中に残り、管理スクリプトは
+    先に終了する。本番ではこれで `pwserver start` が 300 秒返らなくなった。
+    """
+    path = tmp_path / "pwserver"
+    path.write_text(
+        "#!/bin/sh\n"
+        "echo \"[ OK ] Starting pwserver\"\n"
+        # 標準出力を継いだまま残る子。パイプで受けていると EOF が来ない
+        "sleep 30 &\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
+
+
+async def test_lgsm_start_returns_when_the_script_exits(daemonising_script):
+    """常駐した子が標準出力を握っていても、スクリプトの終了で先へ進むこと。"""
+    import time
+
+    from app.services import LgsmService
+
+    service = LgsmService(str(daemonising_script), timeout=10.0)
+    began = time.monotonic()
+    result = await service.start()
+    elapsed = time.monotonic() - began
+
+    assert result.ok is True, result.stderr
+    assert "Starting pwserver" in result.stdout
+    # 待つのはプロセスの終了だけ。常駐した子（30秒）には付き合わない
+    assert elapsed < 5.0, f"{elapsed:.1f}秒かかった（常駐プロセス待ちに戻っている）"
+
+
+async def test_systemctl_returns_when_the_command_exits(tmp_path, monkeypatch):
+    """systemd 経路も同じ。ユニット起動が常駐しても待たされないこと。"""
+    import time
+
+    from app import services
+
+    script = tmp_path / "systemctl"
+    script.write_text("#!/bin/sh\necho done\nsleep 30 &\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setattr(services.shutil, "which", lambda name: str(script))
+    monkeypatch.setattr(
+        services.SystemdService, "_command", lambda self, args, privileged=True: [str(script), *args]
+    )
+
+    service = services.SystemdService("palworld.service", timeout=10.0)
+    began = time.monotonic()
+    result = await service.start()
+
+    assert result.ok is True
+    assert time.monotonic() - began < 5.0
+
+
+async def test_command_that_never_exits_still_times_out(tmp_path):
+    """本当に返らないコマンドは、これまでどおりタイムアウトで打ち切ること。"""
+    from app.services import LgsmService
+
+    script = tmp_path / "pwserver"
+    script.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    result = await LgsmService(str(script), timeout=0.5).start()
+    assert result.ok is False
+    assert "タイムアウト" in result.stderr

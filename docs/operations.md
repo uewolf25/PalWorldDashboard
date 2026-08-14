@@ -195,10 +195,23 @@ journalctl -u dashboard-Pal --since "-30min" | grep シーケンス
 |---|---|---|
 | `world_save` | shutdown API の応答待ち | `PAL_SLOW_TIMEOUT`（既定120秒） |
 | `shutdown_api` | サーバが落ちるのを待っている | `RESTART_SHUTDOWN_GRACE`（既定120秒） |
-| `wait_until_down` | `systemctl` / `pwserver` が返ってこない | `PAL_SERVICE_TIMEOUT`（既定300秒）。LinuxGSM 構成ならその場で `pwserver restart` を手で叩いて所要時間を測る |
+| `wait_until_down` / `apply_settings` | 起動・停止コマンドが返ってこない | `PAL_SERVICE_TIMEOUT`（既定300秒）。**ステップ間がちょうど 300 秒空いていたらこれ** |
+| `systemctl_start` / `systemctl_restart` | サーバが応答を返すのを待っている | `RESTART_STARTUP_TIMEOUT`（既定180秒） |
 
 放っておいても `RESTART_SEQUENCE_TIMEOUT`（既定900秒）で打ち切られ、
 `failed` になって操作を受け付けるようになる。それより早く戻したいときに上の解除を使う。
+
+> **既知の原因（修正済み）。** 管理ツールは以前、コマンドの標準出力をパイプで
+> 受けていた。パイプは書き口が全部閉じるまで終わらないので、LinuxGSM のように
+> ゲームを tmux に預けて自分は終了するスクリプトだと、**コマンドが終わっても
+> 常駐側が握ったままで読み終わらない**。`pwserver start` が実際には数秒で
+> 終わっているのに 300 秒（`PAL_SERVICE_TIMEOUT`）待たされ、成功した再起動を
+> 失敗として報告していた（issue #34）。今は一時ファイルに受けてプロセスの
+> 終了だけを待つ。**同じ症状が出たら、まず動いている版を確かめること。**
+
+```bash
+sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -3
+```
 
 ### ログ画面の `server` 区分が空
 

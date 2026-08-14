@@ -27,6 +27,7 @@ from .auth import (
 )
 from .cache import TTLCache
 from .config import Settings, load_settings
+from .health import ServerHealth
 from .logstream import BrokerLogHandler, LogBroker, configure_logging
 from .monitor import Monitor
 from .notify import DiscordNotifier
@@ -275,10 +276,15 @@ def create_app(
             backup=backup.name,
         )
 
+    # 「サーバが生きているか」の判定はここ1つに寄せる。停止待ち・起動待ち・
+    # ini を書いてよいかの判断が、同じ材料と同じ解釈を使うようにするため
+    health = ServerHealth(pal, service)
+
     restart_manager = RestartManager(
         pal,
         announcer,
         service,
+        health=health,
         notice_offsets=cfg.notice_offsets,
         announce_template=cfg.restart_announce_template,
         debounce_sec=cfg.restart_debounce_sec,
@@ -290,6 +296,7 @@ def create_app(
         # 意図的に落としている間は「応答なし」を通知しない
         suppress_alerts=monitor.suppress_downtime_alerts,
         alert_grace=cfg.restart_alert_grace,
+        startup_timeout=cfg.restart_startup_timeout,
     )
     # シーケンス進行中も同様に抑止する（猶予の計算に取りこぼしがあっても効くように）
     monitor.set_maintenance_probe(lambda: restart_manager.in_progress)
@@ -420,17 +427,9 @@ def create_app(
         """ゲームサーバが動いているか。
 
         ini の書き換えは停止中にしか安全に行えないため、その判定に使う。
-        REST API に到達できれば確実に動いている。到達できない場合でも
-        systemd 側が active ならプロセスは生きているとみなす。
+        判定そのものは ServerHealth に一本化してある（app/health.py）。
         """
-        try:
-            await pal.info()
-            return True
-        except PalApiError:
-            pass
-        # REST API が無効な構成もあるので、プロセス側にも聞く。
-        # 判定できない場合（None）は停止扱いにする — 保存を過剰に止めないため。
-        return bool(await service.is_active())
+        return await health.running()
 
     @app.exception_handler(PalApiError)
     async def _pal_error_handler(request: Request, exc: PalApiError) -> JSONResponse:

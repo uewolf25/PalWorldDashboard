@@ -577,3 +577,87 @@ async def test_task_killed_before_it_runs_does_not_wedge_the_status(app):
     assert manager.status.phase == "cancelled"
     assert manager.status.as_dict()["in_progress"] is False
     assert manager.in_progress is False
+
+
+# ---------------------------------------------------------------------------
+# 「完了」は起動を見届けてから名乗ること（Issue #34）
+#
+# 起動コマンドはプロセスを起こした時点で返る。それを完了と呼ぶと、
+# 上がってこなかったときに誰も気づけない。
+# ---------------------------------------------------------------------------
+
+
+class RebootingService:
+    """restart / start でモックサーバを実際に起こすサービス。"""
+
+    def __init__(self, mock_state) -> None:
+        self._state = mock_state
+        self.calls: list[str] = []
+
+    async def preflight(self) -> CommandResult:
+        return CommandResult(True, 0, "active", "")
+
+    def _ok(self, action: str, running: bool) -> CommandResult:
+        self.calls.append(action)
+        self._state.running = running
+        return CommandResult(True, 0, f"[test] {action}", "")
+
+    async def start(self) -> CommandResult:
+        return self._ok("start", True)
+
+    async def restart(self) -> CommandResult:
+        return self._ok("restart", True)
+
+    async def stop(self) -> CommandResult:
+        return self._ok("stop", False)
+
+    async def is_active(self) -> bool | None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_completion_waits_until_the_server_answers(client, app, mock_state, notifier):
+    app.state.restart._service = RebootingService(mock_state)
+    app.state.restart.startup_timeout = 2.0
+
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    assert status.phase == "done"
+    assert status.startup_confirmed is True
+    assert status.startup_seconds is not None
+    assert "wait_until_up" in [s["name"] for s in status.steps]
+    # 復帰までの秒数は通知にも載せる（T-14 の計測をここで賄う）
+    finish = [n for n in notifier.sent if n["title"] == "サーバー再起動が完了しました"][-1]
+    assert "復帰まで" in finish["description"]
+    assert finish["level"] == "info"
+
+
+async def test_completion_says_so_when_the_server_never_answers(client, app, notifier):
+    """コマンドは通ったのに上がってこない。黙って完了と言わないこと。"""
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    # simulated バックエンドはモックサーバを起こさないので上がってこない
+    assert status.phase == "done"
+    assert status.startup_confirmed is False
+    assert "確認できていません" in status.message
+
+    finish = [n for n in notifier.sent if n["title"] == "サーバー再起動が完了しました"][-1]
+    assert finish["level"] == "warn"
+    assert "確認してください" in finish["description"]
+
+
+async def test_stop_sequence_does_not_wait_for_a_startup(client, app, mock_state):
+    """停止シーケンスは上がってこないのが正しい。起動待ちをしないこと。"""
+    await client.post("/api/shutdown", json=restart_body())
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    assert status.phase == "done"
+    assert status.startup_confirmed is None
+    assert "wait_until_up" not in [s["name"] for s in status.steps]

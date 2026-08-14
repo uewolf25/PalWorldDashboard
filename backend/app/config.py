@@ -183,6 +183,12 @@ class Settings:
     restart_sequence_timeout: float = field(
         default_factory=lambda: _env_float("RESTART_SEQUENCE_TIMEOUT", 900.0)
     )
+    # 起動コマンドのあと、サーバが応答を返すまで待つ上限（秒）。0 で待たない。
+    # ここまで見て初めて「再起動が完了した」と言える（コマンドが通っただけでは
+    # プレイヤーはまだ入れない）。確認できなければ完了通知に警告を添える
+    restart_startup_timeout: float = field(
+        default_factory=lambda: _env_float("RESTART_STARTUP_TIMEOUT", 180.0)
+    )
     # 直前に再起動した直後は受け付けない秒数
     restart_debounce_sec: float = field(
         default_factory=lambda: _env_float("RESTART_DEBOUNCE_SEC", 60.0)

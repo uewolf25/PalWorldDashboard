@@ -238,6 +238,7 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── restart.py       再起動/停止シーケンス（予告・保存・停止）
 │   │   ├── scheduler.py     起動/停止/再起動の予約（APScheduler）
 │   │   ├── monitor.py       定期サンプリングと閾値アラート
+│   │   ├── health.py        サーバの生死判定（停止待ち・起動待ち・書き込み可否）
 │   │   ├── settings_ini.py  PalWorldSettings.ini の読み書きとバックアップ
 │   │   ├── settings_schema.py 各設定項目の型・範囲・カテゴリ定義
 │   │   ├── cache.py         ゲームサーバへの問い合わせを間引く TTL キャッシュ
@@ -247,7 +248,7 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── notify.py        Discord Webhook
 │   │   └── services.py      ゲームサーバのプロセス制御（systemd / 開発用モック）
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（379件）
+│   ├── tests/               pytest（542件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
