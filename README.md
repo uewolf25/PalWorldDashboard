@@ -254,7 +254,8 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 ├── .githooks/pre-commit     コミット前に上記を走らせる
 ├── .github/workflows/ci.yml CI（秘密情報 + テスト + JS 構文）
 ├── dashboard-Pal.env.example
-└── dashboard-Pal.service
+├── dashboard-Pal.service    管理ツール自身のユニット
+└── palworld.service.example ゲームサーバ側のユニットの雛形（無い環境向け）
 ```
 
 ## ローカルで動かす（ゲームサーバ不要）
@@ -664,9 +665,57 @@ sudo mkdir -p /var/log/journal && sudo systemd-journal-flush
 切り分けのときは `LOG_LEVEL=DEBUG` に落とすと、`systemctl is-active` の1件ごとまで出る。
 常用すると journal が埋まるので戻すこと。
 
-### 7. ゲームサーバ側のユニットも直す
+### 7. ゲームサーバ側のユニット
 
-管理ツールではなく **Palworld 側**の `palworld.service` に手を入れる。
+管理ツールではなく **Palworld 側**の話。**ここが無いと、サーバ操作・予約・
+設定変更の予約反映・ログ画面のサーバ側ログが、まとめて機能しない。**
+
+まず、ユニットが存在するかを確かめる。
+
+```bash
+systemctl status palworld.service
+```
+
+`Unit palworld.service could not be found.` と出たら、**存在しない**。
+`systemctl show` は存在しないユニットにも既定値一式を返すので、存在確認には使えない
+（`Restart=no` / `TimeoutStopUSec=1min 30s` が返っても、それは既定値であって設定ではない）。
+
+#### 存在しない場合 — 作る
+
+ゲームサーバをスクリプトで直接常駐させている構成だと、ここが無い。
+`palworld.service.example` を雛形として置いてある。
+
+```bash
+sudo install -o root -g root -m 644 \
+    /opt/dashboard-Pal/palworld.service.example /etc/systemd/system/palworld.service
+sudo nano /etc/systemd/system/palworld.service   # ★ の箇所を自分の環境に直す
+sudo systemctl daemon-reload
+sudo systemctl enable --now palworld
+systemctl status palworld
+```
+
+`User` と `WorkingDirectory` / `ExecStart` は SteamCMD の導入先に合わせる。
+
+```bash
+ls -d /home/*/Steam/steamapps/common/PalServer            # 導入先
+ls -ld /home/steam/Steam/steamapps/common/PalServer       # 所有者
+```
+
+**既存の起動スクリプトがあるなら、systemd を呼ぶ薄いラッパーに直す。**
+両方が独立してプロセスを起動すると二重管理になる。
+
+```
+pwserver start   →  sudo systemctl start palworld.service
+pwserver stop    →  sudo systemctl stop palworld.service
+update-watch.sh  →  systemctl stop → steamcmd +app_update → systemctl start
+```
+
+#### 存在する場合 — 2箇所を直す
+
+```bash
+sudo systemctl edit --full palworld.service
+sudo systemctl daemon-reload
+```
 
 - `Restart=always` を**外す** — 管理ツールが停止した直後に systemd が再起動をかけ、
   ini の書き換えと競合する。加えて、管理ツールは shutdown API でプロセスを落としてから
@@ -674,14 +723,18 @@ sudo mkdir -p /var/log/journal && sudo systemd-journal-flush
   ログ上は再起動が失敗しているのにサーバは動いている、という読みにくい状態になる
 - `TimeoutStopSec=300` を**足す** — ワールド保存の途中で SIGKILL されるとセーブが壊れる
 
-```bash
-systemctl show palworld.service -p Restart -p TimeoutStopUSec   # 現状を確認する
-```
+#### 名前を揃える
 
-```bash
-sudo systemctl edit --full palworld.service
-sudo systemctl daemon-reload
-```
+ユニット名は3箇所で一致している必要がある。ずれていると全操作が失敗する。
+
+| 場所 | 値 |
+|---|---|
+| `/etc/systemd/system/` のファイル名 | `palworld.service` |
+| `/etc/dashboard-Pal.env` の `PAL_SERVICE_NAME` | `palworld.service` |
+| `/etc/sudoers.d/dashboard-Pal` の4行 | `palworld.service` |
+
+管理ツールは再起動/停止シーケンスの冒頭でこれを検証し、
+`LoadState` が `loaded` でなければ**サーバを落とす前に**中止する。
 
 ### 移行前チェックリスト
 
