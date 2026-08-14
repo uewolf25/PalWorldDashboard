@@ -27,7 +27,7 @@ NOT_RUNNING_STATES = frozenset(
 
 # 状態を変えない操作。画面のポーリングから繰り返し呼ばれるので、
 # 成功したときのログは DEBUG に落とす
-READ_ONLY_ACTIONS = frozenset({"is-active"})
+READ_ONLY_ACTIONS = frozenset({"is-active", "show"})
 
 
 @dataclass
@@ -102,13 +102,13 @@ class SystemdService:
             return False
         return True
 
-    def _command(self, args: tuple[str, ...]) -> list[str]:
+    def _command(self, args: tuple[str, ...], *, privileged: bool = True) -> list[str]:
         # -n: パスワードを聞かれたら待たずに失敗する
-        prefix = ["sudo", "-n"] if self.use_sudo else []
+        prefix = ["sudo", "-n"] if self.use_sudo and privileged else []
         return [*prefix, "systemctl", *args]
 
-    async def _run(self, *args: str) -> CommandResult:
-        cmd = self._command(args)
+    async def _run(self, *args: str, privileged: bool = True) -> CommandResult:
+        cmd = self._command(args, privileged=privileged)
         printable = " ".join(cmd)
         # 状態を変える操作は必ず記録する。is-active は画面のポーリングから
         # 何度も呼ばれるので DEBUG に落とし、journald を埋めないようにする
@@ -170,11 +170,31 @@ class SystemdService:
         return await self._run("stop", self.unit)
 
     async def preflight(self) -> CommandResult:
-        """`is-active` を1回だけ叩いて、systemctl がそもそも通るか確かめる。
+        """サーバを落とす前に、このユニットを操作できるか確かめる。
 
-        見たいのはユニットが動いているかではなく、sudo や polkit の段階で
-        弾かれていないか。ユニットが止まっているだけなら成功として返す。
+        見たいのは2つ。systemd がこのユニットを知っているか（綴り間違いや、
+        そもそもゲームサーバが systemd 管理下にない構成を弾く）と、
+        sudo や polkit の段階で弾かれていないか。
+        ユニットが止まっているだけなら成功として返す。
         """
+        # `is-active` は存在しないユニットにも inactive を返すので、これだけでは
+        # 「ユニットが無い」を見抜けない。落としてから起動できないと分かるのが
+        # 最悪なので、先に存在を確かめる。show は読み取りだけで権限が要らないため
+        # sudo を通さない（sudoers に show を足さずに済ませる）
+        loaded = await self._run(
+            "show", self.unit, "--property=LoadState", privileged=False
+        )
+        if not loaded.simulated:
+            state = loaded.stdout.partition("=")[2].strip()
+            if state and state != "loaded":
+                return CommandResult(
+                    False,
+                    loaded.returncode,
+                    loaded.stdout,
+                    f"systemd が {self.unit} を認識していません（LoadState={state}）。"
+                    "PAL_SERVICE_NAME が実在するユニット名か確認してください。",
+                )
+
         result = await self._run("is-active", self.unit)
         if result.ok or result.simulated:
             return result

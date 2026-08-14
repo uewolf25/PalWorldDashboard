@@ -154,8 +154,13 @@ def fake_systemctl(monkeypatch):
 
     monkeypatch.setattr(services.shutil, "which", lambda name: f"/usr/bin/{name}")
 
-    def install(returncode: int, stdout: str = "", stderr: str = ""):
+    def install(
+        returncode: int, stdout: str = "", stderr: str = "", *, load_state: str = "loaded"
+    ):
         async def fake_exec(*args, **kwargs):
+            # ユニットの存在確認は別問い合わせなので、別の応答を返す
+            if "show" in args:
+                return _FakeProc(0, f"LoadState={load_state}", "")
             return _FakeProc(returncode, stdout, stderr)
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
@@ -194,6 +199,32 @@ async def test_preflight_passes_while_the_unit_is_running(fake_systemctl):
     service = SystemdService("palworld.service", use_sudo=True)
 
     assert (await service.preflight()).ok is True
+
+
+async def test_preflight_fails_when_the_unit_does_not_exist(fake_systemctl):
+    """`is-active` は存在しないユニットにも inactive を返す。それだけでは見抜けない。
+
+    実機では PAL_SERVICE_NAME=palworld.service なのにユニットが無く、
+    ここを通してしまうとサーバを落としてから起動できないことに気づく。
+    """
+    fake_systemctl(3, stdout="inactive", load_state="not-found")
+    service = SystemdService("palworld.service", use_sudo=True)
+
+    result = await service.preflight()
+    assert result.ok is False
+    assert "not-found" in result.stderr
+    assert "PAL_SERVICE_NAME" in result.stderr
+
+
+async def test_the_existence_check_does_not_need_sudo(fake_systemctl):
+    """sudoers に show を足さずに済ませる（デプロイ手順を増やさない）。"""
+    service = SystemdService("palworld.service", use_sudo=True)
+
+    assert service._command(("show", "x", "--property=LoadState"), privileged=False) == [
+        "systemctl", "show", "x", "--property=LoadState",
+    ]
+    # 操作系は今までどおり sudo を通す
+    assert service._command(("stop", "x"))[:2] == ["sudo", "-n"]
 
 
 async def test_preflight_is_simulated_without_systemctl():
