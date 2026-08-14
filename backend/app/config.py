@@ -176,6 +176,13 @@ class Settings:
     restart_alert_grace: float = field(
         default_factory=lambda: _env_float("RESTART_ALERT_GRACE", 180.0)
     )
+    # 予告が終わってから完了までの打ち切り時間（秒）。0 で無効。
+    # 保存・shutdown API・停止待ち・systemctl/LinuxGSM はそれぞれ自前の
+    # タイムアウトを持っているので、ここはそのどれもが返らなかったときにだけ
+    # 効く最後の砦。短くすると正常な再起動を途中で失敗扱いにしてしまう
+    restart_sequence_timeout: float = field(
+        default_factory=lambda: _env_float("RESTART_SEQUENCE_TIMEOUT", 900.0)
+    )
     # 直前に再起動した直後は受け付けない秒数
     restart_debounce_sec: float = field(
         default_factory=lambda: _env_float("RESTART_DEBOUNCE_SEC", 60.0)

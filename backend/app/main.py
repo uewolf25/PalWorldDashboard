@@ -284,6 +284,7 @@ def create_app(
         debounce_sec=cfg.restart_debounce_sec,
         shutdown_waittime=cfg.restart_shutdown_wait,
         shutdown_grace=cfg.restart_shutdown_grace,
+        sequence_timeout=cfg.restart_sequence_timeout,
         apply_pending=apply_pending_changes,
         count_pending=lambda sid: len(pending.due_for(sid)),
         # 意図的に落としている間は「応答なし」を通知しない
@@ -822,6 +823,29 @@ def create_app(
         # キャンセル処理が status に反映されるまで少しだけ待つ
         await asyncio.sleep(0)
         return {"result": "cancelled"}
+
+    @app.post("/api/restart/release", dependencies=auth)
+    async def release_restart(body: ServiceActionBody | None = None) -> dict[str, Any]:
+        """固まったシーケンスを打ち切り、次の操作を受け付けられるようにする。
+
+        サーバに送った操作は取り消せない。ここで解除するのは管理ツール側の
+        状態だけで、サーバがどうなっているかは操作者が確かめる必要がある。
+        進行中の表示が残るとその後の停止も起動も弾かれてしまうため、
+        管理ツールから抜け出す口をひとつ用意しておく（issue #34）。
+        """
+        reason = body.reason if body else "手動"
+        status = restart_manager.status.as_dict()
+        if not restart_manager.release(reason):
+            raise HTTPException(409, "解除できる進行中のシーケンスがありません")
+        await announcer.discord_only(
+            "シーケンスの進行状態を解除しました",
+            f"{status['mode_label']}シーケンス（{status['phase']}）を打ち切りました。\n"
+            f"理由: {reason}\n**サーバの状態は確認してください。**",
+            source="system",
+            level="warn",
+            reason=reason,
+        )
+        return {"result": "released", "restart": restart_manager.status.as_dict()}
 
     @app.post("/api/service/{action}", dependencies=auth)
     async def service_action(action: str, body: ServiceActionBody | None = None) -> dict[str, Any]:

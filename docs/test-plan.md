@@ -48,7 +48,7 @@ cd /opt/dashboard-Pal && python3 scripts/check_secrets.py
 | `test_auth.py` | 55 | トークンの偽造・期限切れ、Cookie の属性、ログアウト、総当たり制限、閲覧と操作の切り分け、パスワードの伏字化 |
 | `test_scheduler.py` | 36 | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
 | `test_services.py` | 34 | バックエンド選択、事前チェックの合否判定、LinuxGSM 経路、失敗の記録 |
-| `test_restart.py` | 33 | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、事前中止と救済起動 |
+| `test_restart.py` | 38 | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、事前中止と救済起動、**戻ってこないときの打ち切りと強制解除** |
 | `test_logstream_levels.py` | 33 | ログ行の区分判定、stderr（＝journald）への出力、`LOG_LEVEL` の切り替えと不正値 |
 | `test_world.py` | 30 | ワールドセーブのバックアップ、世代管理、復元、パストラバーサル防止 |
 | `test_presence.py` | 29 | 入退室の検知と履歴、永続化 |
@@ -208,6 +208,14 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 | 期待 | ステップが順に記録され `phase=done`<br>`preflight` → `world_save` → `shutdown_api` → `wait_until_down` → `systemctl_restart`（または LinuxGSM の restart）<br>その後サーバが起動し、ダッシュボードが `online` に戻る |
 | 計測 | **停止から `online` 復帰までの秒数を記録する。** `RESTART_ALERT_GRACE`（既定180秒）を超えるなら設定を伸ばす |
 | NG の見方 | `rescue_start` が記録されていたら、停止か再起動のコマンドが失敗している |
+
+| ID | T-14b |
+|---|---|
+| 目的 | **進行中の表示が残らないこと**（issue #34） |
+| 手順 | T-14 のあと、ダッシュボードの進行中バナーが消えるまで見る |
+| 期待 | `phase=done` になった時点でバナーが消え、停止・起動・再起動が受け付けられる |
+| NG の見方 | 「(restarting) …」のまま戻らない → journal でどのステップで止まったか見る（下記）。復旧はバナーの「解除」ボタン、または `curl -XPOST localhost:8080/api/restart/release`。**解除はサーバへの指示を取り消さない**ので、解除後は必ずサーバの生死を確認する |
+| 備考 | `journalctl -u dashboard-Pal --since "-30min" \| grep シーケンス` に `world_save` → `shutdown_api` → `wait_until_down` → `systemctl_restart` の所要時刻が出る。最後に出たステップの次で止まっている |
 
 | ID | T-15 |
 |---|---|

@@ -449,3 +449,131 @@ async def test_failed_restart_still_tries_to_bring_the_server_back(client, app, 
     assert "systemctl_restart" in step_names
     assert "rescue_start" in step_names
     assert service.calls == ["preflight", "restart", "start"]
+
+
+# ---------------------------------------------------------------------------
+# 進行中のまま固まらないこと（Issue #34）
+#
+# 進行中の表示が残ると、以後の停止も起動も「既に進行中です」で弾かれ、
+# 管理ツールから何も操作できなくなる。実機ではここに嵌まった。
+# ---------------------------------------------------------------------------
+
+
+class HangingService:
+    """systemctl / LinuxGSM が返ってこないサービス。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.started = asyncio.Event()
+
+    async def preflight(self) -> CommandResult:
+        return CommandResult(True, 0, "active", "")
+
+    async def _hang(self, action: str) -> CommandResult:
+        self.calls.append(action)
+        self.started.set()
+        await asyncio.sleep(3600)
+        raise AssertionError("ここには来ない")
+
+    async def start(self) -> CommandResult:
+        return await self._hang("start")
+
+    async def stop(self) -> CommandResult:
+        return await self._hang("stop")
+
+    async def restart(self) -> CommandResult:
+        return await self._hang("restart")
+
+    async def is_active(self) -> bool | None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_stuck_sequence_is_cut_off_by_the_deadline(client, app, mock_state):
+    """どこかで戻らなくなっても、打ち切って終端状態に落とすこと。"""
+    app.state.restart._service = HangingService()
+    app.state.restart.sequence_timeout = 0.2
+
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    assert status.phase == "failed"
+    assert "終わりませんでした" in status.message
+    assert [s["name"] for s in status.steps].count("sequence_timeout") == 1
+    # 打ち切ったあとは次の操作を受け付ける
+    assert (await client.get("/api/restart")).json()["in_progress"] is False
+    assert (await client.post("/api/restart", json=restart_body(force=True))).status_code == 200
+
+    app.state.restart.cancel()
+    await app.state.restart.wait()
+
+
+async def test_stuck_sequence_can_be_released(client, app):
+    """打ち切りを待たずに、操作者が進行状態を解除できること。"""
+    service = HangingService()
+    app.state.restart._service = service
+
+    await client.post("/api/restart", json=restart_body())
+    await asyncio.wait_for(service.started.wait(), timeout=2)
+
+    body = (await client.get("/api/restart")).json()
+    assert body["in_progress"] is True
+    assert body["cancellable"] is False   # 予告は終わっているので取り消せない
+    assert body["releasable"] is True
+    # この状態では停止も再起動も受け付けられない
+    assert (await client.post("/api/shutdown", json=restart_body())).status_code == 409
+
+    resp = await client.post("/api/restart/release", json={"reason": "戻ってこない"})
+    assert resp.status_code == 200
+    assert resp.json()["restart"]["in_progress"] is False
+
+    status = (await client.get("/api/restart")).json()
+    assert status["phase"] == "failed"
+    assert "解除" in status["message"]
+    assert [s["name"] for s in status["steps"]][-1] == "released"
+    # 解除できたので、改めて操作できる
+    assert (await client.post("/api/shutdown", json=restart_body())).status_code == 200
+
+    app.state.restart.cancel()
+    await app.state.restart.wait()
+
+
+async def test_release_does_not_overwrite_the_next_sequence(client, app):
+    """解除したあと、遅れて終わった古いシーケンスが新しい状態を壊さないこと。"""
+    app.state.restart._service = HangingService()
+
+    await client.post("/api/restart", json=restart_body())
+    await _wait_for(lambda: app.state.restart.status.phase == "restarting")
+    assert app.state.restart.release("テスト") is True
+
+    await client.post("/api/restart", json=restart_body(notice_offsets=[30, 10]))
+    # 解除された側のキャンセル処理が走りきるまで回す
+    await asyncio.sleep(0.05)
+
+    assert app.state.restart.status.phase == "announcing"
+    assert app.state.restart.status.as_dict()["in_progress"] is True
+
+    app.state.restart.cancel()
+    await app.state.restart.wait()
+
+
+async def test_release_without_a_sequence_is_409(client):
+    assert (await client.post("/api/restart/release")).status_code == 409
+
+
+async def test_task_killed_before_it_runs_does_not_wedge_the_status(app):
+    """タスクが本体の例外処理を通らずに終わっても、進行中のまま残さないこと。"""
+    manager = app.state.restart
+    await manager.request(reason="テスト", announce_message=MSG, notice_offsets=[30])
+    assert manager.status.phase == "announcing"
+
+    # コルーチンが走り出す前に落とす（本体の except は一度も動かない）
+    manager._task.cancel()
+    await manager.wait()
+
+    assert manager.status.phase == "cancelled"
+    assert manager.status.as_dict()["in_progress"] is False
+    assert manager.in_progress is False

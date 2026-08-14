@@ -165,6 +165,41 @@ sudoers を検証するときは、**ユニットと同じ条件で**確かめ�
 sudo systemd-run --uid=mntuser --pipe --wait sudo -n systemctl is-active palworld.service
 ```
 
+### 「再起動シーケンス進行中」のまま戻らない（issue #34）
+
+サーバは落ちて起動しているのに、画面が「(restarting) …」のまま止まっている状態。
+このとき**停止も再起動も「既に進行中です」で弾かれる**ので、まず表示を解除する。
+
+進行中バナーの「解除」ボタン（予告を過ぎると出る）か、次で解除できる。
+
+```bash
+curl -XPOST -u admin:*** localhost:8080/api/restart/release -H 'Content-Type: application/json' \
+     -d '{"reason":"進行中のまま戻らない"}'
+```
+
+**解除してもサーバに送った指示は取り消されない。** 管理ツール側の進行状態を
+手放すだけなので、解除したあとに必ずサーバの生死を確認すること。
+
+```bash
+curl -s localhost:8080/api/status | python3 -m json.tool | grep -E '"online"|"phase"'
+```
+
+どこで止まったかは、シーケンスのステップが journal に残っているので追える。
+**最後に出たステップの次で止まっている。**
+
+```bash
+journalctl -u dashboard-Pal --since "-30min" | grep シーケンス
+```
+
+| 最後のステップ | 止まっている場所 | 見るところ |
+|---|---|---|
+| `world_save` | shutdown API の応答待ち | `PAL_SLOW_TIMEOUT`（既定120秒） |
+| `shutdown_api` | サーバが落ちるのを待っている | `RESTART_SHUTDOWN_GRACE`（既定120秒） |
+| `wait_until_down` | `systemctl` / `pwserver` が返ってこない | `PAL_SERVICE_TIMEOUT`（既定300秒）。LinuxGSM 構成ならその場で `pwserver restart` を手で叩いて所要時間を測る |
+
+放っておいても `RESTART_SEQUENCE_TIMEOUT`（既定900秒）で打ち切られ、
+`failed` になって操作を受け付けるようになる。それより早く戻したいときに上の解除を使う。
+
 ### ログ画面の `server` 区分が空
 
 ```bash
