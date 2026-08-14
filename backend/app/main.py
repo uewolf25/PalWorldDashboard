@@ -210,6 +210,15 @@ def create_app(
         command=cfg.pal_service_command,
         timeout=cfg.pal_service_timeout,
     )
+    # LinuxGSM は journald ではなく自前のログファイルに書く。組み合わせが
+    # ちぐはぐだと、ログ画面の server 区分が黙って空になるだけで気づけない
+    if cfg.pal_service_backend == "lgsm" and cfg.log_source == "journald":
+        logger.warning(
+            "LOG_SOURCE=journald ですが LinuxGSM 構成です。ゲームサーバは journald に"
+            "書かないので、ログ画面の server 区分は空のままになります。"
+            "LOG_SOURCE=file と LOG_FILE=<LinuxGSM の console ログ> にしてください"
+        )
+
     ini_store = SettingsIniStore(cfg.pal_settings_ini, cfg.backup_dir, keep=cfg.backup_keep)
     world_store = WorldStore(
         cfg.pal_save_dir, cfg.world_backup_dir, keep=cfg.world_backup_keep
@@ -848,7 +857,10 @@ def create_app(
 
     @app.post("/api/service/{action}", dependencies=auth)
     async def service_action(action: str, body: ServiceActionBody | None = None) -> dict[str, Any]:
-        """systemd ユニットを直接操作する。
+        """ゲームサーバのプロセスを直接操作する。
+
+        何で操作するかは PAL_SERVICE_BACKEND 次第（LinuxGSM の管理スクリプト /
+        systemctl）。この口はその違いを見せない。
 
         停止中のサーバにはアナウンスを送れないので、起動はここから即時実行する。
         停止と再起動は予告アナウンスを伴う /api/shutdown と /api/restart を使うこと
@@ -857,15 +869,18 @@ def create_app(
         if action not in ("start", "stop", "restart"):
             raise HTTPException(400, "action は start/stop/restart のいずれかです")
         reason = body.reason if body else "手動"
-        logger.info("サーバ操作 %s を実行します (理由: %s)", action, reason)
+        command = service.describe(action)
+        logger.info("サーバ操作 %s を実行します (%s, 理由: %s)", action, command, reason)
         result = await getattr(service, action)()
         if not result.ok:
             logger.warning("サーバ操作 %s に失敗しました: %s", action, result.stderr)
-            raise HTTPException(500, result.stderr or "systemctl の実行に失敗しました")
+            raise HTTPException(500, result.stderr or f"{service.label} の実行に失敗しました")
         labels = {"start": "起動", "stop": "停止", "restart": "再起動"}
         await announcer.discord_only(
             f"サーバーを{labels[action]}しました",
-            f"systemctl {action} {cfg.pal_service_name}\n理由: {reason}",
+            # 実際に走ったコマンドを残す。構成を移行している最中に
+            # 「どちらの経路で操作したのか」を後から辿れるようにするため
+            f"{command}\n理由: {reason}",
             source="system",
             reason=reason,
         )

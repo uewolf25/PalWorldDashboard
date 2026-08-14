@@ -541,3 +541,19 @@ async def test_backends_report_what_they_actually_run():
     assert LgsmService("/home/mntuser/pwserver").label == "pwserver"
     assert SystemdService("palworld.service").label == "systemctl"
     assert "simulated" in SimulatedService().label
+
+
+async def test_lgsm_with_journald_log_source_is_warned(settings, pal_client, notifier, caplog):
+    """LinuxGSM 構成で LOG_SOURCE=journald は、ログ画面が黙って空になる組み合わせ。"""
+    import logging
+
+    from app.main import create_app
+
+    settings.pal_service_backend = "lgsm"
+    settings.pal_service_command = "/home/mntuser/pwserver"
+    settings.log_source = "journald"
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        create_app(settings, pal_client=pal_client, notifier=notifier, start_background=False)
+
+    assert "LOG_SOURCE=file" in caplog.text

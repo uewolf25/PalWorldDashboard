@@ -960,11 +960,27 @@ function sequenceElapsedText(r) {
   return null;
 }
 
+// 「何でプロセスを操作しているか」の表示。構成によって実体が違うので、
+// systemd 決め打ちの文言を画面に置かない（Issue #34 のレビュー指摘）
+function serviceTargetText() {
+  const c = state.config || {};
+  if (c.pal_service_backend === "lgsm") {
+    return "LinuxGSM" + (c.pal_service_command ? "（" + c.pal_service_command + "）" : "");
+  }
+  if (c.pal_service_backend === "systemd") {
+    return "systemd ユニット" + (c.pal_service_name ? "（" + c.pal_service_name + "）" : "");
+  }
+  if (c.pal_service_backend === "mock") return "モックサーバ（開発用）";
+  if (c.pal_service_backend === "simulated") return "空回し（simulated・実際には操作しません）";
+  return c.pal_service_backend || "不明";
+}
+
 function openStartModal(onDone) {
   const reason = el("input", { type: "text", placeholder: "例: メンテ明け", value: "手動" });
   openModal({
     title: "サーバーを起動します",
-    lead: "systemd ユニットを起動します。停止中のサーバにはアナウンスを送れないため、予告はありません。",
+    lead: serviceTargetText() + " でサーバのプロセスを起動します。"
+          + "停止中のサーバにはアナウンスを送れないため、予告はありません。",
     confirmLabel: "起動する",
     body: [
       el("div", { class: "infobox", text: "既に起動している場合は何も起きません。" }),
@@ -2355,7 +2371,7 @@ function renderSettings(root) {
 
   async function load() {
     if (state.config) {
-      serviceInfo.textContent = "systemd ユニット: " + state.config.pal_service_name;
+      serviceInfo.textContent = "プロセス制御: " + serviceTargetText();
     }
     let data;
     try { data = await api("/api/settings-ini"); }

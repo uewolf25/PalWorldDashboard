@@ -1,8 +1,15 @@
 """ゲームサーバのプロセス制御。
 
-実機は systemd ユニットを操作する。開発機には systemctl が無いので、
-同じインタフェースでモックサーバを起動/停止するバックエンドを用意し、
-どちらを使うかは設定（PAL_SERVICE_BACKEND）で切り替える。
+誰がゲームサーバのプロセスを持つかは環境で違うので、口だけ揃えて
+実装を差し替えられるようにする。どれを使うかは PAL_SERVICE_BACKEND で決める。
+
+  lgsm      … LinuxGSM の管理スクリプト（pwserver 等）を直接呼ぶ。**本番はこれ**
+  systemd   … systemctl でユニットを操作する。素の SteamCMD 構成向け（**廃止予定**）
+  mock      … 同梱モックサーバの制御 API を叩く（開発）
+  simulated … 何もせず成功を返す（テスト）
+
+呼び出し側（再起動シーケンス）はどれが動いているかを知らない。通知やログに
+出す名前だけは実体に合わせたいので、label と describe() をここで持たせる。
 
 実機との差分はこのモジュールに閉じ込める。
 """
@@ -117,6 +124,10 @@ class GameService(Protocol):
     # というすれ違いを無くすため、実体の名前を持たせる
     label: str
 
+    def describe(self, action: str) -> str:
+        """その操作で実際に走るコマンド。通知に残して後から辿れるようにする。"""
+        ...
+
     async def start(self) -> CommandResult: ...
     async def stop(self) -> CommandResult: ...
     async def restart(self) -> CommandResult: ...
@@ -163,6 +174,9 @@ class SystemdService:
     @property
     def label(self) -> str:
         return "systemctl"
+
+    def describe(self, action: str) -> str:
+        return " ".join(self._command((action, self.unit)))
 
     @property
     def available(self) -> bool:
@@ -307,6 +321,9 @@ class MockGameService:
             await self._client.aclose()
             self._client = None
 
+    def describe(self, action: str) -> str:
+        return f"{self.control_url}/__mock__/{action}"
+
     async def _post(self, path: str) -> CommandResult:
         url = f"{self.control_url}/__mock__/{path}"
         try:
@@ -379,6 +396,9 @@ class LgsmService:
     def label(self) -> str:
         # 実際に叩く管理スクリプトの名前（pwserver など）
         return Path(self.command).name or "LinuxGSM"
+
+    def describe(self, action: str) -> str:
+        return f"{self.command} {action}"
 
     async def _run(self, action: str) -> CommandResult:
         printable = f"{self.command} {action}"
@@ -479,6 +499,9 @@ class SimulatedService:
         self.unit = unit
         self.label = "空回しバックエンド（simulated）"
         self._running = True
+
+    def describe(self, action: str) -> str:
+        return f"[simulated] {action} {self.unit}".strip()
 
     async def _result(self, action: str) -> CommandResult:
         return CommandResult(
