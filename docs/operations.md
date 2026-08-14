@@ -156,6 +156,28 @@ sudo grep -E "LOG_SOURCE|LOG_FILE|PAL_SERVICE_NAME" /etc/dashboard-Pal.env
 - `LOG_SOURCE=journald` でユニットもある → `mntuser` が `systemd-journal` グループに入っているか
 - `LOG_SOURCE=file` → `LOG_FILE` のパスと読み取り権限
 
+### LinuxGSM 構成で `pwserver start` が黙って失敗する
+
+`dashboard-Pal.service` のサンドボックスに阻まれている可能性が高い。
+
+```bash
+sudo grep -E "PrivateTmp|ProtectHome|ReadWritePaths" /etc/systemd/system/dashboard-Pal.service
+```
+
+| 設定 | 症状 |
+|---|---|
+| `PrivateTmp=true` | tmux のソケットが `/tmp` にあるため、管理ツールから見える `/tmp` が別物になる。**SSH から起動したセッションを掴めず、停止も状態確認もすれ違う**。`false` にすること |
+| `ReadWritePaths` が ini のディレクトリだけ | LinuxGSM は rootdir 配下にログ・ロック・serverfiles を書く。`ReadWritePaths=/home/mntuser` まで開けること |
+
+tmux のソケットがどこにあるかは次で確認できる。
+
+```bash
+ls -la /tmp/tmux-$(id -u)/ 2>/dev/null
+echo "${TMUX_TMPDIR:-/tmp}"
+```
+
+sudo を使わない構成なので、代わりに `NoNewPrivileges=true` を足してよい。
+
 ### 設定変更が ini に書き込まれない
 
 - **稼働中は書かない仕様。** Palworld が停止時にメモリ上の設定で ini を上書きするため、

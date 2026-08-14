@@ -694,10 +694,22 @@ PAL_SERVICE_COMMAND=/home/mntuser/pwserver    # LinuxGSM の管理スクリプ�
 
 **sudoers の設定は要らない。** 管理ツールと LinuxGSM が同じユーザで動くので、
 特権昇格を一切使わない（`PAL_SYSTEMCTL_SUDO` は `false` のまま）。
+使わないぶん、`dashboard-Pal.service` に `NoNewPrivileges=true` を足してよくなる。
 
-管理ツールは LinuxGSM を書き換えるので、サンドボックスの穴を開ける必要がある。
-`dashboard-Pal.service` の `ReadWritePaths` に LinuxGSM の置き場を足すこと
-（`ProtectHome=read-only` が効いているため）。
+**`dashboard-Pal.service` のサンドボックスを2箇所ゆるめる必要がある。**
+ここが噛み合っていないと `pwserver start` が黙って失敗する。
+
+```ini
+# LinuxGSM は tmux のソケットを /tmp に作る。true のままだと管理ツールから
+# 見える /tmp が別物になり、SSH から起動したセッションを掴めない（逆も同じ）
+PrivateTmp=false
+
+# LinuxGSM は rootdir 配下にログ・ロック・serverfiles を書く。
+# ini のディレクトリだけ開けても足りない
+ReadWritePaths=/home/mntuser
+```
+
+`ProtectHome=read-only` はそのままでよい（他ユーザの home は保護されたまま）。
 
 ログ画面の取り込み元も変える。LinuxGSM は journald ではなく自前のログに書く。
 
