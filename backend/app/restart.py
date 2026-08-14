@@ -55,7 +55,7 @@ MODE_LABELS: dict[str, str] = {"restart": "再起動", "stop": "停止"}
 ACTIVE_PHASES: tuple[Phase, ...] = ("announcing", "saving", "restarting")
 
 # 予告が終わってから完了までの打ち切り時間（秒）。
-# 各段（保存・shutdown API・停止待ち・systemctl/LinuxGSM）はそれぞれ自前の
+# 各段（保存・shutdown API・停止待ち・プロセス制御コマンド）はそれぞれ自前の
 # タイムアウトを持っているので、ここは「そのどれもが返ってこなかった」場合に
 # だけ効く最後の砦。正常な再起動では絶対に届かない長さにしておくこと
 DEFAULT_SEQUENCE_TIMEOUT = 900.0
@@ -83,7 +83,7 @@ class RestartDebounced(RuntimeError):
 
 
 class ServiceControlUnavailable(RuntimeError):
-    """プロセス制御（systemctl / LinuxGSM）が通らないと分かったので、
+    """プロセス制御（LinuxGSM の管理スクリプト等）が通らないと分かったので、
     サーバを落とす前に中止した。
 
     落としてから気づいても起動し直せないので、これだけは
@@ -422,7 +422,7 @@ class RestartManager:
                 await self._announce_countdown(status, template, offsets, mode, reason)
 
                 # ここから先は待ち時間が読めない外部（Palworld API と
-                # systemctl / LinuxGSM）が相手になる。各段のタイムアウトを
+                # LinuxGSM の管理スクリプト）が相手になる。各段のタイムアウトを
                 # すり抜けて戻ってこないと進行中のまま固まるので、
                 # 実行部全体にも打ち切りを掛ける（issue #34）
                 async with asyncio.timeout(
@@ -661,8 +661,8 @@ class RestartManager:
     ) -> None:
         label = MODE_LABELS.get(mode, mode)
 
-        # shutdown API を通すとゲームサーバは落ちる。そこから先でプロセス制御
-        # （systemctl / LinuxGSM の管理スクリプト）が通らないと分かっても、
+        # shutdown API を通すとゲームサーバは落ちる。そこから先で
+        # プロセス制御（LinuxGSM の管理スクリプト）が通らないと分かっても、
         # 起動し直す手段が無いまま落ちたままになる。
         # 引き返せるうちに、サービスを操作できるかどうかだけ確かめておく
         if self.control_process:

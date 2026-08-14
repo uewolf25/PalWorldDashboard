@@ -210,6 +210,14 @@ def create_app(
         command=cfg.pal_service_command,
         timeout=cfg.pal_service_timeout,
     )
+    # ゲームサーバの systemd 運用は本番から廃止した。切り戻しや設定の
+    # コピー元違いで戻ってきていないか、起動時に気づけるようにしておく
+    if cfg.env == "production" and cfg.pal_service_backend == "systemd":
+        logger.warning(
+            "PAL_SERVICE_BACKEND=systemd は本番では廃止しました。"
+            "LinuxGSM 構成（PAL_SERVICE_BACKEND=lgsm と PAL_SERVICE_COMMAND）に直してください"
+        )
+
     # LinuxGSM は journald ではなく自前のログファイルに書く。組み合わせが
     # ちぐはぐだと、ログ画面の server 区分が黙って空になるだけで気づけない
     if cfg.pal_service_backend == "lgsm" and cfg.log_source == "journald":
@@ -859,8 +867,8 @@ def create_app(
     async def service_action(action: str, body: ServiceActionBody | None = None) -> dict[str, Any]:
         """ゲームサーバのプロセスを直接操作する。
 
-        何で操作するかは PAL_SERVICE_BACKEND 次第（LinuxGSM の管理スクリプト /
-        systemctl）。この口はその違いを見せない。
+        何で操作するかは PAL_SERVICE_BACKEND 次第（本番は LinuxGSM の管理
+        スクリプト）。この口はその違いを見せない。
 
         停止中のサーバにはアナウンスを送れないので、起動はここから即時実行する。
         停止と再起動は予告アナウンスを伴う /api/shutdown と /api/restart を使うこと

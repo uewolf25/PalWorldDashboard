@@ -148,7 +148,12 @@ class GameService(Protocol):
 
 
 class SystemdService:
-    """systemctl でゲームサーバのユニットを操作する（本番）。
+    """systemctl でゲームサーバのユニットを操作する。
+
+    **本番では廃止した。** ゲームサーバは LinuxGSM に一本化したので、この経路は
+    手元で systemd 管理のサーバを触りたいときのためだけに残してある。
+    新しく本番に入れないこと（sudoers / polkit の設定ミスという失敗クラスが
+    そのまま戻ってくる: issue #28）。
 
     管理ツールは root 以外のユーザ（本番は mntuser）で動くのが普通なので、
     そのままでは systemctl を実行できない。sudoers で必要な操作だけ許可し、
@@ -549,16 +554,19 @@ def build_service(
     if backend == "simulated":
         logger.info("ゲームサーバの制御を空回しします（simulated）")
         return SimulatedService(unit)
-    if backend == "lgsm":
-        logger.info("ゲームサーバの制御に LinuxGSM を使います: %s", command)
-        return LgsmService(command, dry_run=dry_run, timeout=timeout)
-    if backend and backend != "systemd":
-        # 綴り間違いや、この版が知らないバックエンド名。黙って systemd に落ちると
+    if backend == "systemd":
+        # 本番からは廃止済み。手元で systemd 管理のサーバを触るとき用に残している
+        logger.warning(
+            "ゲームサーバの制御に systemd を使います: %s (sudo=%s)。"
+            "この経路は本番では廃止しました（開発用に残しているだけです）",
+            unit, use_sudo,
+        )
+        return SystemdService(unit, dry_run=dry_run, use_sudo=use_sudo, timeout=timeout)
+    if backend:
+        # 綴り間違いや、この版が知らないバックエンド名。黙って既定に落ちると
         # 「設定したつもりの経路と違う」まま動いてしまう（切り戻し時に踏みやすい）
         logger.warning(
-            "PAL_SERVICE_BACKEND=%r は知らない値です。systemd として扱います", backend
+            "PAL_SERVICE_BACKEND=%r は知らない値です。lgsm として扱います", backend
         )
-    logger.info(
-        "ゲームサーバの制御に systemd を使います: %s (sudo=%s)", unit, use_sudo
-    )
-    return SystemdService(unit, dry_run=dry_run, use_sudo=use_sudo, timeout=timeout)
+    logger.info("ゲームサーバの制御に LinuxGSM を使います: %s", command)
+    return LgsmService(command, dry_run=dry_run, timeout=timeout)

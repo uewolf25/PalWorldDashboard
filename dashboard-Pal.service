@@ -18,35 +18,30 @@ StateDirectory=dashboard-Pal
 RuntimeDirectory=dashboard-Pal
 
 # --- 最低限のサンドボックス ---
-# 既定は PAL_SERVICE_BACKEND=systemd（素の SteamCMD 構成）向け。
-# LinuxGSM 構成（PAL_SERVICE_BACKEND=lgsm）では下の「LinuxGSM の場合」を参照。
+# LinuxGSM 構成（PAL_SERVICE_BACKEND=lgsm）向け。ゲームサーバの systemd 運用は
+# 廃止したので、sudo も sudoers も使わない。
 #
-# NoNewPrivileges は付けない。付けると setuid の sudo が原理的に昇格できず、
-# PAL_SYSTEMCTL_SUDO=true でのサーバ操作が start/stop/restart/is-active まとめて
-# 全部失敗する（issue #28）。sudoers を正しく書いても直らない。
-# ※ LinuxGSM 構成なら sudo を使わないので、NoNewPrivileges=true を足してよい。
-PrivateTmp=true
+# 特権昇格を使わないぶん、これを付けられる。issue #28 の失敗クラス
+# （sudo と NoNewPrivileges の同居で全操作が失敗する）ごと消えている
+NoNewPrivileges=true
+
+# ★ PrivateTmp は false のままにすること。
+# LinuxGSM は tmux のソケットを /tmp に作る（/tmp/tmux-<uid>/pwserver-<乱数>）。
+# true にすると管理ツールから見える /tmp が別の名前空間になり、SSH から起動した
+# セッションを掴めない（その逆も）。停止も状態確認もすれ違う
+PrivateTmp=false
+
 ProtectSystem=full
-ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-# PalWorldSettings.ini を書き換えるため、その配置先だけ書き込み許可する。
-# ★ 実際の置き場に直すこと（既定は SteamCMD 標準の決め打ち）
-ReadWritePaths=/home/steam/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer
 
-# --- LinuxGSM の場合はここを差し替える ---
-# 管理スクリプト（pwserver 等）を呼ぶので、上の2行を次に置き換える。
-#
-#   # LinuxGSM は tmux のソケットを /tmp に作る。PrivateTmp=true だと
-#   # 管理ツールから見える /tmp が別物になり、SSH から起動したセッションを
-#   # 掴めない（その逆も）。停止も状態確認もすれ違う
-#   PrivateTmp=false
-#   # LinuxGSM は rootdir 配下にログ・ロック・serverfiles を書く。
-#   # ini のディレクトリだけ開けても pwserver start が失敗する
-#   ReadWritePaths=/home/mntuser
-#
-# ProtectHome=read-only はそのままでよい（他ユーザの home は保護されたまま）。
+# 他ユーザの home は読み取りのみ。書き込みは下の ReadWritePaths で開けた範囲だけ
+ProtectHome=read-only
+# ★ LinuxGSM を導入したユーザの home（rootdir）。実際の環境に合わせること。
+# LinuxGSM は rootdir 配下にログ・ロック・serverfiles を書くので、
+# PalWorldSettings.ini のディレクトリだけ開けても pwserver start が失敗する
+ReadWritePaths=/home/mntuser
 
 [Install]
 WantedBy=multi-user.target

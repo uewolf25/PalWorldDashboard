@@ -55,7 +55,7 @@ class MockState:
 
     # ゲームサーバのプロセスが動いているか。
     # False の間は /v1/api/* が 503 を返す（停止中のサーバに繋がらない状況の再現）。
-    # __mock__/* の制御エンドポイントは停止中でも応答する（systemd に相当する面のため）。
+    # __mock__/* の制御エンドポイントは停止中でも応答する（プロセス制御に相当する面のため）。
     running: bool = True
     started_at: float = field(default_factory=time.time)
     players: list[dict[str, Any]] = field(default_factory=list)
@@ -292,8 +292,8 @@ def stop(_: None = Depends(require_admin)) -> dict[str, str]:
 # --- モック専用の操作エンドポイント（実機には無い） -----------------------
 # standalone で動かして UI を触るときに、状況を作るために使う。
 #
-# 停止中でも応答する。実機では systemd がこの役割（プロセスの起動/停止）を持ち、
-# ゲームサーバが落ちていても systemctl は動くのと同じ関係にしてある。
+# 停止中でも応答する。実機では LinuxGSM がこの役割（プロセスの起動/停止）を持ち、
+# ゲームサーバが落ちていても管理スクリプトは動くのと同じ関係にしてある。
 
 
 @app.get("/__mock__/status")
@@ -303,7 +303,7 @@ def mock_status() -> dict[str, Any]:
 
 @app.post("/__mock__/start")
 def mock_start() -> dict[str, Any]:
-    """停止中のサーバを起動する（systemctl start 相当）。"""
+    """停止中のサーバを起動する（pwserver start 相当）。"""
     if not STATE.running:
         STATE.running = True
         STATE.started_at = time.time()
@@ -312,7 +312,7 @@ def mock_start() -> dict[str, Any]:
 
 @app.post("/__mock__/stop")
 def mock_stop() -> dict[str, Any]:
-    """サーバを停止する（systemctl stop 相当）。"""
+    """サーバを停止する（pwserver stop 相当）。"""
     STATE.running = False
     STATE.players = []
     return {"running": STATE.running}
@@ -320,7 +320,7 @@ def mock_stop() -> dict[str, Any]:
 
 @app.post("/__mock__/restart")
 def mock_restart() -> dict[str, Any]:
-    """停止して起動し直す（systemctl restart 相当）。"""
+    """停止して起動し直す（pwserver restart 相当）。"""
     STATE.running = True
     STATE.started_at = time.time()
     STATE.players = [_new_player(i) for i in range(3)]

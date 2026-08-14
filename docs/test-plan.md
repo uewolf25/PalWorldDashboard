@@ -47,15 +47,15 @@ cd /opt/dashboard-Pal && python3 scripts/check_secrets.py
 | `test_check_secrets.py` | 56 | 秘密情報の検出漏れと誤検知、実際に起きた流出未遂ケース、対象外リストの肥大防止 |
 | `test_auth.py` | 55 | トークンの偽造・期限切れ、Cookie の属性、ログアウト、総当たり制限、閲覧と操作の切り分け、パスワードの伏字化 |
 | `test_scheduler.py` | 36 | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
-| `test_services.py` | 38 | バックエンド選択、事前チェックの合否判定、LinuxGSM 経路、失敗の記録、**常駐プロセスに標準出力を握られても戻ること** |
+| `test_services.py` | 41 | バックエンド選択（既定は lgsm・systemd は廃止扱い）、事前チェックの合否判定、LinuxGSM 経路、失敗の記録、**常駐プロセスに標準出力を握られても戻ること** |
 | `test_restart.py` | 42 | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、事前中止と救済起動、**戻ってこないときの打ち切りと強制解除、起動を見届けてからの完了** |
 | `test_logstream_levels.py` | 33 | ログ行の区分判定、stderr（＝journald）への出力、`LOG_LEVEL` の切り替えと不正値 |
 | `test_world.py` | 30 | ワールドセーブのバックアップ、世代管理、復元、パストラバーサル防止 |
 | `test_presence.py` | 29 | 入退室の検知と履歴、永続化 |
-| `test_hardening.py` | 29 | 実機投入前に潰したリスク（タイムアウト分離、停止待ち、inode 保持、sudo と NoNewPrivileges、誤警報抑止、キャッシュ） |
+| `test_hardening.py` | 29 | 実機投入前に潰したリスク（タイムアウト分離、停止待ち、inode 保持、サンドボックスの要件、誤警報抑止、キャッシュ） |
 | `test_pending.py` | 28 | 稼働中の保存、停止シーケンスでの自動反映、予約への紐づけ、反映失敗時の復旧、永続化 |
 | `test_dashboard.py` | 17 | ステータス、プレイヤー一覧、キック/BAN/UNBAN、操作の認証、秘密情報の伏字化 |
-| `test_announce.py` | 17 | アナウンス履歴の記録・永続化・上限・フィルタ、送信失敗の記録 |
+| `test_announce.py` | 18 | アナウンス履歴の記録・永続化・上限・フィルタ、送信失敗の記録、サーバ操作に実行したコマンドが残ること |
 | `test_settings_ini.py` | 13 | ini のパース（引用符内カンマ含む）、更新、バックアップ、復元、不正な内容の拒否 |
 | `test_schedule_skip.py` | 13 | 予約の「今回はスキップ」 |
 | `test_monitor.py` | 13 | メトリクス記録、メモリ閾値アラートと cooldown、サーバ up/down 検知 |
@@ -70,7 +70,7 @@ cd /opt/dashboard-Pal && python3 scripts/check_secrets.py
 - ゲームサーバのプロセスが本当に止まる / 起動するか
 - `PalWorldSettings.ini` を実際に書き込めるか（所有者・権限・サンドボックス）
 - ワールド保存が制限時間内に終わるか
-- sudo / polkit / ユニットの存在といった権限まわり
+- サンドボックス（`PrivateTmp` / `ReadWritePaths`）と実行権限まわり
 - ゲーム内アナウンスが日本語で正しく出るか
 - ブラウザでの実操作
 
@@ -117,8 +117,8 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 |---|---|
 | 目的 | **意図した経路でサーバを操作する設定になっていること** |
 | 手順 | `curl -s localhost:8080/api/config \| python3 -m json.tool \| grep -E "pal_service\|log_source\|dry_run\|env"` |
-| 期待 | `pal_service_backend` が `lgsm` または `systemd`（**`mock` / `simulated` でないこと**）、`dry_run: false`、`env: "production"` |
-| 備考 | `mock` のままだと全操作が成功を装って何もしない。ここを目視以外で保証するのが狙い |
+| 期待 | `pal_service_backend` が `lgsm`（**`mock` / `simulated` / `systemd` でないこと**）、`pal_service_command` が実在するパス、`dry_run: false`、`env: "production"` |
+| 備考 | `mock` のままだと全操作が成功を装って何もしない。ゲームサーバの systemd 運用は廃止したので、`systemd` が出たら構成が戻っている（起動時に警告も出る） |
 
 | ID | T-03 |
 |---|---|
@@ -183,7 +183,7 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 | ID | T-11 |
 |---|---|
 | 目的 | **操作できないときに、サーバを落とす前に中止すること**（issue #28 の本体） |
-| 前提 | 設定をわざと壊す。例: `PAL_SERVICE_COMMAND` を存在しないパスにする（`systemd` 構成なら `PAL_SERVICE_NAME` を存在しないユニット名にする）→ `sudo systemctl restart dashboard-Pal` |
+| 前提 | 設定をわざと壊す。`PAL_SERVICE_COMMAND` を存在しないパスにする → `sudo systemctl restart dashboard-Pal` |
 | 手順 | 「サーバ設定」タブから再起動（予告は最短で可） |
 | 期待 | ・**ゲームサーバが動き続けている**<br>・シーケンスが `preflight (ok=False)` で止まる<br>・通知に「**サーバーは落としていません**」が入る<br>・`journalctl` に理由（`LoadState=not-found` / `実行権限がありません` 等）が残る |
 | 後処理 | 設定を戻して `restart` |
@@ -318,14 +318,14 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 実施日       :
 実施者       :
 対象コミット :          （git log --oneline -1）
-構成         : lgsm / systemd
+構成         : lgsm（systemd は廃止）
 ```
 
 | ID | 項目 | 判定 | 備考 |
 |---|---|---|---|
 | T-01 | 管理ツール起動 | | |
 | T-02 | バックエンド設定 | | |
-| T-03 | journald ログ | | |
+| T-03 | 管理ツールのログ | | |
 | T-04 | 認証 | | |
 | T-05 | 状態取得 | | |
 | T-06 | ログ画面 | | |
@@ -361,6 +361,6 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 | PR | CI が全件 | — |
 | 本番デプロイ | 全件 | 全項目 |
 | 設定ファイルだけ変更 | — | T-01〜T-03、T-14 |
-| プロセス制御の構成変更（systemd ⇄ lgsm） | 全件 | 全項目 |
+| プロセス制御の構成変更（バックエンド / サンドボックス） | 全件 | 全項目 |
 | ワールドが大きく育った | — | T-14、T-15（保存時間の再測定） |
 | Palworld のアップデート後 | 全件 | T-05、T-07、T-14 |

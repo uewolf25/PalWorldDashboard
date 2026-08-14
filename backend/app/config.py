@@ -96,39 +96,47 @@ class Settings:
     )
 
     # --- ゲームサーバのプロセス制御 ---
+    # systemd バックエンド専用（本番では使わない）。journald からログを
+    # 取り込む構成でも参照する
     pal_service_name: str = field(
         default_factory=lambda: _env("PAL_SERVICE_NAME", "palworld.service")
     )
-    # systemd / lgsm / mock / simulated。
-    # mock と simulated は開発用（前者はモックサーバを起動/停止、後者は空回し）
+    # lgsm / mock / simulated / systemd。
+    #   lgsm      … LinuxGSM の管理スクリプトを呼ぶ。**本番はこれ**
+    #   mock      … 同梱モックサーバを起動/停止（開発）
+    #   simulated … 空回し（テスト）
+    #   systemd   … systemctl でユニットを操作する。**本番では廃止。**
+    #                手元で systemd 管理のサーバを触りたいときだけ使う
     pal_service_backend: str = field(
-        default_factory=lambda: _env("PAL_SERVICE_BACKEND", "systemd")
+        default_factory=lambda: _env("PAL_SERVICE_BACKEND", "lgsm")
     )
     # lgsm バックエンドで叩く LinuxGSM の管理スクリプト
     pal_service_command: str = field(
         default_factory=lambda: _env("PAL_SERVICE_COMMAND", "")
     )
-    # 起動/停止の待ち時間。systemd 側の TimeoutStopSec より短いと、
-    # 止まりきる前にこちらが諦めてしまう
+    # 起動/停止コマンドの待ち時間。LinuxGSM の start/stop は数十秒で終わるので、
+    # ここまで待たされるのは異常（systemd を使う場合は TimeoutStopSec 以上にする）
     pal_service_timeout: float = field(
         default_factory=lambda: _env_float("PAL_SERVICE_TIMEOUT", 300.0)
     )
     pal_mock_control_url: str = field(
         default_factory=lambda: _env("PAL_MOCK_CONTROL_URL", "http://127.0.0.1:8212")
     )
-    # 専用ユーザで動かす場合、systemctl は sudo 経由でないと実行できない。
-    # sudoers に NOPASSWD で登録したうえで true にする。
-    # lgsm バックエンドでは不要（管理ツールと同じユーザで動くため）
+    # systemd バックエンド専用（本番では使わない）。専用ユーザで動かす場合、
+    # systemctl は sudo 経由でないと実行できないため、sudoers に NOPASSWD で
+    # 登録したうえで true にする。lgsm では特権昇格そのものを使わない
     pal_systemctl_sudo: bool = field(
         default_factory=lambda: _env_bool("PAL_SYSTEMCTL_SUDO", False)
     )
 
     # --- 設定ファイル ---
+    # 既定は LinuxGSM 構成の置き場（${rootdir}/serverfiles/...）。
+    # 素の SteamCMD 構成では場所が違うので、その場合は必ず明示する
     pal_settings_ini: Path = field(
         default_factory=lambda: Path(
             _env(
                 "PAL_SETTINGS_INI",
-                "/home/steam/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini",
+                "/home/mntuser/serverfiles/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini",
             )
         )
     )
@@ -177,7 +185,7 @@ class Settings:
         default_factory=lambda: _env_float("RESTART_ALERT_GRACE", 180.0)
     )
     # 予告が終わってから完了までの打ち切り時間（秒）。0 で無効。
-    # 保存・shutdown API・停止待ち・systemctl/LinuxGSM はそれぞれ自前の
+    # 保存・shutdown API・停止待ち・プロセス制御コマンドはそれぞれ自前の
     # タイムアウトを持っているので、ここはそのどれもが返らなかったときにだけ
     # 効く最後の砦。短くすると正常な再起動を途中で失敗扱いにしてしまう
     restart_sequence_timeout: float = field(
@@ -253,8 +261,10 @@ class Settings:
     )
 
     # --- ログストリーム ---
-    # journald / file / none
-    log_source: str = field(default_factory=lambda: _env("LOG_SOURCE", "journald"))
+    # ゲームサーバ側のログの取り込み元。file / journald / none。
+    # LinuxGSM は journald ではなく自前のログファイルに書くので、
+    # 本番の既定は file（LOG_FILE に console ログのパスを入れる）
+    log_source: str = field(default_factory=lambda: _env("LOG_SOURCE", "file"))
     log_file: Path = field(default_factory=lambda: Path(_env("LOG_FILE", "/var/log/palworld.log")))
     # 管理ツール自身のログの詳しさ（journald と画面の両方に効く）
     log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "INFO"))

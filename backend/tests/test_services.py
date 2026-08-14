@@ -114,9 +114,10 @@ async def test_systemd_is_simulated_without_systemctl():
 @pytest.mark.parametrize("backend,expected", [
     ("mock", MockGameService),
     ("simulated", SimulatedService),
-    ("systemd", SystemdService),
     ("lgsm", LgsmService),
-    ("", SystemdService),          # 未指定は systemd
+    # 本番では廃止したが、手元で systemd 管理のサーバを触るときのために残してある
+    ("systemd", SystemdService),
+    ("", LgsmService),             # 未指定は lgsm（本番の構成）
 ])
 def test_build_service_selects_backend(backend, expected):
     service = build_service(
@@ -437,26 +438,53 @@ async def test_lgsm_state_is_left_to_the_rest_api(lgsm_script):
 
 
 async def test_an_unknown_backend_is_reported(caplog):
-    """切り戻しで踏みやすい。古い版に lgsm を渡すと黙って systemd に落ちる。"""
+    """綴り間違いが黙って既定に落ちると、想定と違う経路のまま動いてしまう。"""
     import logging
 
     with caplog.at_level(logging.WARNING, logger="app.services"):
         service = build_service(
-            "systemdd", unit="x.service", dry_run=False, mock_control_url="http://h"
+            "lgsmm", unit="x.service", dry_run=False, mock_control_url="http://h",
+            command="/home/mntuser/pwserver",
         )
 
-    assert isinstance(service, SystemdService)
+    assert isinstance(service, LgsmService)
     assert "知らない値" in caplog.text
 
 
 async def test_the_default_backend_is_not_reported(caplog):
-    """未指定は systemd が正しい既定なので、警告を出さない。"""
+    """未指定は lgsm が正しい既定なので、警告を出さない。"""
     import logging
 
     with caplog.at_level(logging.WARNING, logger="app.services"):
-        build_service("", unit="x.service", dry_run=False, mock_control_url="http://h")
+        build_service("", unit="x.service", dry_run=False, mock_control_url="http://h",
+                      command="/home/mntuser/pwserver")
 
     assert caplog.text == ""
+
+
+async def test_systemd_backend_says_it_is_retired(caplog):
+    """本番から廃止した経路。選ばれていたら気づけるようにする。"""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="app.services"):
+        build_service("systemd", unit="x.service", dry_run=False, mock_control_url="http://h")
+
+    assert "廃止" in caplog.text
+
+
+async def test_production_with_systemd_is_warned(settings, pal_client, notifier, caplog):
+    """設定のコピー元違いで本番に systemd が戻ってきていないか。"""
+    import logging
+
+    from app.main import create_app
+
+    settings.env = "production"
+    settings.pal_service_backend = "systemd"
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        create_app(settings, pal_client=pal_client, notifier=notifier, start_background=False)
+
+    assert "本番では廃止" in caplog.text
 
 
 # ---- 常駐プロセスに握られても戻ること（issue #34） -------------------------
