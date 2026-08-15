@@ -317,7 +317,7 @@ async def test_stop_schedule_runs_the_stop_sequence(client, app, mock_state):
     status = app.state.restart.status
     assert status.mode == "stop"
     assert status.phase == "done"
-    assert "systemctl_stop" in [s["name"] for s in status.steps]
+    assert "service_stop" in [s["name"] for s in status.steps]
     assert all("停止します" in a for a in mock_state.announcements[:3])
 
 

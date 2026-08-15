@@ -925,11 +925,62 @@ function openSequenceModal(mode, onDone) {
   });
 }
 
+// 進行中の表示が残って操作を受け付けなくなったときの逃げ道（Issue #34）。
+// サーバへの操作は取り消せないので、そうと分かる文面にしてある
+function openReleaseModal(status, onDone) {
+  const reason = el("input", { type: "text", placeholder: "例: 進行中のまま戻らない", value: "手動" });
+  openModal({
+    title: "シーケンスの進行状態を解除します",
+    lead: "管理ツール側の「進行中」を解除して、停止や起動を受け付けられるようにします。",
+    danger: true,
+    confirmLabel: "解除する",
+    body: [
+      el("div", { class: "warnbox" },
+        "サーバーに送った停止・再起動の指示は取り消せません。解除したあとは、"
+        + "サーバーが実際に動いているかを必ず確認してください。"),
+      el("div", { class: "muted small" },
+        "現在の状態: (" + (status.phase || "") + ") " + (status.message || "")),
+      el("div", { class: "field" }, [el("label", { text: "理由（Discord に記録されます）" }), reason]),
+    ],
+    async onConfirm() {
+      await post("/api/restart/release", { reason: reason.value.trim() || "手動" });
+      toast("シーケンスの進行状態を解除しました", "ok");
+      if (onDone) onDone();
+    },
+  });
+}
+
+// 進行中バナーに出す時間表示。予告が終わると残り時間は 0 に張り付くので、
+// そこからは経過時間に切り替える（固まっているのかどうかが分かるように）
+function sequenceElapsedText(r) {
+  if (r.cancellable && r.seconds_remaining !== null && r.seconds_remaining !== undefined) {
+    return "残り " + fmtDuration(r.seconds_remaining);
+  }
+  if (r.elapsed !== null && r.elapsed !== undefined) return "経過 " + fmtDuration(r.elapsed);
+  return null;
+}
+
+// 「何でプロセスを操作しているか」の表示。構成によって実体が違うので、
+// systemd 決め打ちの文言を画面に置かない（Issue #34 のレビュー指摘）
+function serviceTargetText() {
+  const c = state.config || {};
+  if (c.pal_service_backend === "lgsm") {
+    return "LinuxGSM" + (c.pal_service_command ? "（" + c.pal_service_command + "）" : "");
+  }
+  if (c.pal_service_backend === "systemd") {
+    return "systemd ユニット" + (c.pal_service_name ? "（" + c.pal_service_name + "）" : "");
+  }
+  if (c.pal_service_backend === "mock") return "モックサーバ（開発用）";
+  if (c.pal_service_backend === "simulated") return "空回し（simulated・実際には操作しません）";
+  return c.pal_service_backend || "不明";
+}
+
 function openStartModal(onDone) {
   const reason = el("input", { type: "text", placeholder: "例: メンテ明け", value: "手動" });
   openModal({
     title: "サーバーを起動します",
-    lead: "systemd ユニットを起動します。停止中のサーバにはアナウンスを送れないため、予告はありません。",
+    lead: serviceTargetText() + " でサーバのプロセスを起動します。"
+          + "停止中のサーバにはアナウンスを送れないため、予告はありません。",
     confirmLabel: "起動する",
     body: [
       el("div", { class: "infobox", text: "既に起動している場合は何も起きません。" }),
@@ -1606,12 +1657,16 @@ function renderDashboard(root) {
     clear(restartBox);
     const r = s.restart || {};
     if (r.in_progress) {
-      const remain = r.seconds_remaining;
+      const timeText = sequenceElapsedText(r);
       restartBox.appendChild(el("div", { class: "panel", style: "margin-top:16px" },
         el("div", { class: "row" }, [
           el("strong", { text: r.mode_label + "シーケンス進行中" }),
           el("span", { class: "muted", text: "(" + r.phase + ") " + r.message }),
-          remain !== null && remain !== undefined ? el("span", { class: "mono", text: "残り " + fmtDuration(remain) }) : null,
+          timeText ? el("span", { class: "mono", text: timeText }) : null,
+          r.releasable ? gate(el("button", {
+            class: "btn small danger", text: "解除",
+            onclick: () => openReleaseModal(r, () => { tick(); loadHistory(); }),
+          })) : null,
           r.cancellable ? gate(el("button", {
             class: "btn small danger", text: "キャンセル",
             onclick: () => openModal({
@@ -2250,11 +2305,15 @@ function renderSettings(root) {
     catch (e) { return; }
     clear(sequenceBox);
     if (!r.in_progress) return;
+    const timeText = sequenceElapsedText(r);
     sequenceBox.appendChild(el("div", { class: "warnbox row" }, [
       el("strong", { text: r.mode_label + "シーケンス進行中" }),
       el("span", { text: "(" + r.phase + ") " + r.message }),
-      r.seconds_remaining !== null && r.seconds_remaining !== undefined
-        ? el("span", { text: "残り " + fmtDuration(r.seconds_remaining) }) : null,
+      timeText ? el("span", { text: timeText }) : null,
+      r.releasable ? gate(el("button", {
+        class: "btn small danger", text: "解除",
+        onclick: () => openReleaseModal(r, refreshSequence),
+      })) : null,
       r.cancellable ? gate(el("button", {
         class: "btn danger", text: "キャンセル",
         onclick: () => openModal({
@@ -2312,7 +2371,7 @@ function renderSettings(root) {
 
   async function load() {
     if (state.config) {
-      serviceInfo.textContent = "systemd ユニット: " + state.config.pal_service_name;
+      serviceInfo.textContent = "プロセス制御: " + serviceTargetText();
     }
     let data;
     try { data = await api("/api/settings-ini"); }

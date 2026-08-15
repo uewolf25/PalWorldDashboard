@@ -40,7 +40,7 @@ export APP_PORT=8080
 # 開発では素通し。ログイン画面を試したいときは値を入れる
 export APP_PASSWORD=${APP_PASSWORD:-}
 export APP_SESSION_SECRET_FILE="$DEV/session-secret"
-# systemctl が無いので、モックサーバ自体を起動/停止するバックエンドを使う。
+# 実機の LinuxGSM は無いので、モックサーバ自体を起動/停止するバックエンドを使う。
 # これがないと「停止」しても停止扱いにならず、設定ファイルの編集を試せない
 export PAL_SERVICE_BACKEND=mock
 export PAL_MOCK_CONTROL_URL=http://127.0.0.1:8212

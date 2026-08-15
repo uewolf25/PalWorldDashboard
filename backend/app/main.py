@@ -27,6 +27,7 @@ from .auth import (
 )
 from .cache import TTLCache
 from .config import Settings, load_settings
+from .health import ServerHealth
 from .logstream import BrokerLogHandler, LogBroker, configure_logging
 from .monitor import Monitor
 from .notify import DiscordNotifier
@@ -209,6 +210,23 @@ def create_app(
         command=cfg.pal_service_command,
         timeout=cfg.pal_service_timeout,
     )
+    # ゲームサーバの systemd 運用は本番から廃止した。切り戻しや設定の
+    # コピー元違いで戻ってきていないか、起動時に気づけるようにしておく
+    if cfg.env == "production" and cfg.pal_service_backend == "systemd":
+        logger.warning(
+            "PAL_SERVICE_BACKEND=systemd は本番では廃止しました。"
+            "LinuxGSM 構成（PAL_SERVICE_BACKEND=lgsm と PAL_SERVICE_COMMAND）に直してください"
+        )
+
+    # LinuxGSM は journald ではなく自前のログファイルに書く。組み合わせが
+    # ちぐはぐだと、ログ画面の server 区分が黙って空になるだけで気づけない
+    if cfg.pal_service_backend == "lgsm" and cfg.log_source == "journald":
+        logger.warning(
+            "LOG_SOURCE=journald ですが LinuxGSM 構成です。ゲームサーバは journald に"
+            "書かないので、ログ画面の server 区分は空のままになります。"
+            "LOG_SOURCE=file と LOG_FILE=<LinuxGSM の console ログ> にしてください"
+        )
+
     ini_store = SettingsIniStore(cfg.pal_settings_ini, cfg.backup_dir, keep=cfg.backup_keep)
     world_store = WorldStore(
         cfg.pal_save_dir, cfg.world_backup_dir, keep=cfg.world_backup_keep
@@ -275,20 +293,27 @@ def create_app(
             backup=backup.name,
         )
 
+    # 「サーバが生きているか」の判定はここ1つに寄せる。停止待ち・起動待ち・
+    # ini を書いてよいかの判断が、同じ材料と同じ解釈を使うようにするため
+    health = ServerHealth(pal, service)
+
     restart_manager = RestartManager(
         pal,
         announcer,
         service,
+        health=health,
         notice_offsets=cfg.notice_offsets,
         announce_template=cfg.restart_announce_template,
         debounce_sec=cfg.restart_debounce_sec,
         shutdown_waittime=cfg.restart_shutdown_wait,
         shutdown_grace=cfg.restart_shutdown_grace,
+        sequence_timeout=cfg.restart_sequence_timeout,
         apply_pending=apply_pending_changes,
         count_pending=lambda sid: len(pending.due_for(sid)),
         # 意図的に落としている間は「応答なし」を通知しない
         suppress_alerts=monitor.suppress_downtime_alerts,
         alert_grace=cfg.restart_alert_grace,
+        startup_timeout=cfg.restart_startup_timeout,
     )
     # シーケンス進行中も同様に抑止する（猶予の計算に取りこぼしがあっても効くように）
     monitor.set_maintenance_probe(lambda: restart_manager.in_progress)
@@ -419,17 +444,9 @@ def create_app(
         """ゲームサーバが動いているか。
 
         ini の書き換えは停止中にしか安全に行えないため、その判定に使う。
-        REST API に到達できれば確実に動いている。到達できない場合でも
-        systemd 側が active ならプロセスは生きているとみなす。
+        判定そのものは ServerHealth に一本化してある（app/health.py）。
         """
-        try:
-            await pal.info()
-            return True
-        except PalApiError:
-            pass
-        # REST API が無効な構成もあるので、プロセス側にも聞く。
-        # 判定できない場合（None）は停止扱いにする — 保存を過剰に止めないため。
-        return bool(await service.is_active())
+        return await health.running()
 
     @app.exception_handler(PalApiError)
     async def _pal_error_handler(request: Request, exc: PalApiError) -> JSONResponse:
@@ -823,9 +840,35 @@ def create_app(
         await asyncio.sleep(0)
         return {"result": "cancelled"}
 
+    @app.post("/api/restart/release", dependencies=auth)
+    async def release_restart(body: ServiceActionBody | None = None) -> dict[str, Any]:
+        """固まったシーケンスを打ち切り、次の操作を受け付けられるようにする。
+
+        サーバに送った操作は取り消せない。ここで解除するのは管理ツール側の
+        状態だけで、サーバがどうなっているかは操作者が確かめる必要がある。
+        進行中の表示が残るとその後の停止も起動も弾かれてしまうため、
+        管理ツールから抜け出す口をひとつ用意しておく（issue #34）。
+        """
+        reason = body.reason if body else "手動"
+        status = restart_manager.status.as_dict()
+        if not restart_manager.release(reason):
+            raise HTTPException(409, "解除できる進行中のシーケンスがありません")
+        await announcer.discord_only(
+            "シーケンスの進行状態を解除しました",
+            f"{status['mode_label']}シーケンス（{status['phase']}）を打ち切りました。\n"
+            f"理由: {reason}\n**サーバの状態は確認してください。**",
+            source="system",
+            level="warn",
+            reason=reason,
+        )
+        return {"result": "released", "restart": restart_manager.status.as_dict()}
+
     @app.post("/api/service/{action}", dependencies=auth)
     async def service_action(action: str, body: ServiceActionBody | None = None) -> dict[str, Any]:
-        """systemd ユニットを直接操作する。
+        """ゲームサーバのプロセスを直接操作する。
+
+        何で操作するかは PAL_SERVICE_BACKEND 次第（本番は LinuxGSM の管理
+        スクリプト）。この口はその違いを見せない。
 
         停止中のサーバにはアナウンスを送れないので、起動はここから即時実行する。
         停止と再起動は予告アナウンスを伴う /api/shutdown と /api/restart を使うこと
@@ -834,15 +877,18 @@ def create_app(
         if action not in ("start", "stop", "restart"):
             raise HTTPException(400, "action は start/stop/restart のいずれかです")
         reason = body.reason if body else "手動"
-        logger.info("サーバ操作 %s を実行します (理由: %s)", action, reason)
+        command = service.describe(action)
+        logger.info("サーバ操作 %s を実行します (%s, 理由: %s)", action, command, reason)
         result = await getattr(service, action)()
         if not result.ok:
             logger.warning("サーバ操作 %s に失敗しました: %s", action, result.stderr)
-            raise HTTPException(500, result.stderr or "systemctl の実行に失敗しました")
+            raise HTTPException(500, result.stderr or f"{service.label} の実行に失敗しました")
         labels = {"start": "起動", "stop": "停止", "restart": "再起動"}
         await announcer.discord_only(
             f"サーバーを{labels[action]}しました",
-            f"systemctl {action} {cfg.pal_service_name}\n理由: {reason}",
+            # 実際に走ったコマンドを残す。構成を移行している最中に
+            # 「どちらの経路で操作したのか」を後から辿れるようにするため
+            f"{command}\n理由: {reason}",
             source="system",
             reason=reason,
         )

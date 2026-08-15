@@ -1,8 +1,15 @@
 """ゲームサーバのプロセス制御。
 
-実機は systemd ユニットを操作する。開発機には systemctl が無いので、
-同じインタフェースでモックサーバを起動/停止するバックエンドを用意し、
-どちらを使うかは設定（PAL_SERVICE_BACKEND）で切り替える。
+誰がゲームサーバのプロセスを持つかは環境で違うので、口だけ揃えて
+実装を差し替えられるようにする。どれを使うかは PAL_SERVICE_BACKEND で決める。
+
+  lgsm      … LinuxGSM の管理スクリプト（pwserver 等）を直接呼ぶ。**本番はこれ**
+  systemd   … systemctl でユニットを操作する。素の SteamCMD 構成向け（**廃止予定**）
+  mock      … 同梱モックサーバの制御 API を叩く（開発）
+  simulated … 何もせず成功を返す（テスト）
+
+呼び出し側（再起動シーケンス）はどれが動いているかを知らない。通知やログに
+出す名前だけは実体に合わせたいので、label と describe() をここで持たせる。
 
 実機との差分はこのモジュールに閉じ込める。
 """
@@ -14,6 +21,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -34,6 +42,60 @@ NOT_RUNNING_STATES = frozenset(
 # 状態を変えない操作。画面のポーリングから繰り返し呼ばれるので、
 # 成功したときのログは DEBUG に落とす
 READ_ONLY_ACTIONS = frozenset({"is-active", "show"})
+
+# プロセスを殺したあと、後始末が終わるのを待つ上限（秒）
+_KILL_GRACE = 5.0
+
+
+class _Finished:
+    """プロセスの実行結果（成否の解釈は呼び出し側でする）。"""
+
+    __slots__ = ("returncode", "stdout", "stderr", "timed_out")
+
+    def __init__(self, returncode: int, stdout: str, stderr: str, timed_out: bool = False) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+
+
+async def _run_process(cmd: list[str], *, timeout: float, printable: str) -> _Finished:
+    """コマンドを実行して、**プロセスが終わるまで**待つ。
+
+    出力をパイプで受けてはいけない。パイプは書き口が全部閉じるまで EOF に
+    ならないので、起動したプロセスが常駐プロセス（LinuxGSM なら tmux）に
+    仕事を渡して自分は終了しても、その常駐側が書き口を握っている限り
+    読み終わらない。実際 `pwserver start` はすぐ終わっているのに、こちらは
+    PAL_SERVICE_TIMEOUT の 300 秒ぶん待たされ、成功した再起動を失敗として
+    報告していた（issue #34）。
+
+    一時ファイルに落とせば、待つのはプロセスの終了だけで済む。
+    常駐側が同じファイルを掴んだままでも、こちらは読んで閉じれば先へ進める。
+    """
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            # 端末を継がせない。入力待ちで固まる経路を作らないため
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=out,
+            stderr=err,
+        )
+        try:
+            returncode = await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE)
+            except asyncio.TimeoutError:  # pragma: no cover - 消せないプロセス
+                logger.warning("%s を kill しても終了しません", printable)
+            logger.warning("%s が %.0f 秒でタイムアウトしました", printable, timeout)
+            return _Finished(-1, "", f"{printable} がタイムアウトしました", timed_out=True)
+
+        def _read(handle) -> str:
+            handle.seek(0)
+            return handle.read().decode(errors="replace")
+
+        return _Finished(returncode or 0, _read(out), _read(err))
 
 
 @dataclass
@@ -57,6 +119,15 @@ class CommandResult:
 class GameService(Protocol):
     """ゲームサーバのプロセスを起動/停止する口。"""
 
+    # 何でプロセスを操作しているか（通知やログに出す短い名前）。
+    # 「systemctl が実行できません」と書いてあるのに LinuxGSM 構成だった、
+    # というすれ違いを無くすため、実体の名前を持たせる
+    label: str
+
+    def describe(self, action: str) -> str:
+        """その操作で実際に走るコマンド。通知に残して後から辿れるようにする。"""
+        ...
+
     async def start(self) -> CommandResult: ...
     async def stop(self) -> CommandResult: ...
     async def restart(self) -> CommandResult: ...
@@ -77,7 +148,12 @@ class GameService(Protocol):
 
 
 class SystemdService:
-    """systemctl でゲームサーバのユニットを操作する（本番）。
+    """systemctl でゲームサーバのユニットを操作する。
+
+    **本番では廃止した。** ゲームサーバは LinuxGSM に一本化したので、この経路は
+    手元で systemd 管理のサーバを触りたいときのためだけに残してある。
+    新しく本番に入れないこと（sudoers / polkit の設定ミスという失敗クラスが
+    そのまま戻ってくる: issue #28）。
 
     管理ツールは root 以外のユーザ（本番は mntuser）で動くのが普通なので、
     そのままでは systemctl を実行できない。sudoers で必要な操作だけ許可し、
@@ -99,6 +175,13 @@ class SystemdService:
         self.dry_run = dry_run
         self.timeout = timeout
         self.use_sudo = use_sudo
+
+    @property
+    def label(self) -> str:
+        return "systemctl"
+
+    def describe(self, action: str) -> str:
+        return " ".join(self._command((action, self.unit)))
 
     @property
     def available(self) -> bool:
@@ -131,38 +214,30 @@ class SystemdService:
                 simulated=True,
             )
         logger.log(level, "%s を実行します", printable)
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            logger.warning("%s が %.0f 秒でタイムアウトしました", printable, self.timeout)
-            return CommandResult(False, -1, "", f"{printable} がタイムアウトしました")
+        done = await _run_process(cmd, timeout=self.timeout, printable=printable)
+        if done.timed_out:
+            return CommandResult(False, -1, "", done.stderr)
 
-        stderr = err.decode(errors="replace").strip()
-        if proc.returncode == 0:
+        stderr = done.stderr.strip()
+        if done.returncode == 0:
             logger.log(level, "%s が完了しました", printable)
         else:
             # 唯一ここでしか残らない。画面の 500 だけでは後から追えない
             logger.warning(
                 "%s が失敗しました (rc=%s): %s",
-                printable, proc.returncode, stderr or "(stderr なし)",
+                printable, done.returncode, stderr or "(stderr なし)",
             )
         # sudoers の設定漏れは原因が分かりにくいので、そうと分かる形にする
-        if proc.returncode != 0 and "password is required" in stderr:
+        if done.returncode != 0 and "password is required" in stderr:
             stderr = (
                 f"{stderr}\n"
                 "sudoers でこの操作が許可されていません。"
                 "/etc/sudoers.d/dashboard-Pal に NOPASSWD で登録してください。"
             )
         return CommandResult(
-            ok=proc.returncode == 0,
-            returncode=proc.returncode or 0,
-            stdout=out.decode(errors="replace").strip(),
+            ok=done.returncode == 0,
+            returncode=done.returncode,
+            stdout=done.stdout.strip(),
             stderr=stderr,
         )
 
@@ -236,6 +311,7 @@ class MockGameService:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.control_url = control_url.rstrip("/")
+        self.label = "モックサーバの制御 API"
         self._timeout = timeout
         self._client = client
         self._owns_client = client is None
@@ -249,6 +325,9 @@ class MockGameService:
         if self._client is not None and self._owns_client:
             await self._client.aclose()
             self._client = None
+
+    def describe(self, action: str) -> str:
+        return f"{self.control_url}/__mock__/{action}"
 
     async def _post(self, path: str) -> CommandResult:
         url = f"{self.control_url}/__mock__/{path}"
@@ -318,6 +397,14 @@ class LgsmService:
         self.dry_run = dry_run
         self.timeout = timeout
 
+    @property
+    def label(self) -> str:
+        # 実際に叩く管理スクリプトの名前（pwserver など）
+        return Path(self.command).name or "LinuxGSM"
+
+    def describe(self, action: str) -> str:
+        return f"{self.command} {action}"
+
     async def _run(self, action: str) -> CommandResult:
         printable = f"{self.command} {action}"
         if self.dry_run:
@@ -326,39 +413,35 @@ class LgsmService:
 
         logger.info("%s を実行します", printable)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                self.command,
-                action,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            done = await _run_process(
+                [self.command, action], timeout=self.timeout, printable=printable
             )
         except OSError as exc:
             logger.warning("%s を起動できません: %s", printable, exc)
             return CommandResult(False, -1, "", f"{self.command} を実行できません: {exc}")
 
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            logger.warning("%s が %.0f 秒でタイムアウトしました", printable, self.timeout)
-            return CommandResult(False, -1, "", f"{printable} がタイムアウトしました")
+        if done.timed_out:
+            # LinuxGSM の start/stop は数十秒で終わる。ここまで待たされるのは
+            # スクリプトが止まっているとき（issue #34 は別の原因だったが、
+            # 本当に固まっている可能性もあるので状態は確認すること）
+            return CommandResult(False, -1, "", done.stderr)
 
         # LinuxGSM は端末向けに色を付けて出力するので、記録する前に落とす
-        stdout = _ANSI.sub("", out.decode(errors="replace")).strip()
-        stderr = _ANSI.sub("", err.decode(errors="replace")).strip()
-        if proc.returncode == 0:
+        stdout = _ANSI.sub("", done.stdout).strip()
+        stderr = _ANSI.sub("", done.stderr).strip()
+        if done.returncode == 0:
             logger.info("%s が完了しました", printable)
         else:
             logger.warning(
                 "%s が失敗しました (rc=%s): %s",
-                printable, proc.returncode, stderr or stdout or "(出力なし)",
+                printable, done.returncode, stderr or stdout or "(出力なし)",
             )
         return CommandResult(
-            ok=proc.returncode == 0,
-            returncode=proc.returncode or 0,
+            ok=done.returncode == 0,
+            returncode=done.returncode,
             stdout=stdout,
             # LinuxGSM は失敗の理由も stdout に書くことがあるので拾っておく
-            stderr=stderr or (stdout if proc.returncode != 0 else ""),
+            stderr=stderr or (stdout if done.returncode != 0 else ""),
         )
 
     async def start(self) -> CommandResult:
@@ -419,7 +502,11 @@ class SimulatedService:
 
     def __init__(self, unit: str = "") -> None:
         self.unit = unit
+        self.label = "空回しバックエンド（simulated）"
         self._running = True
+
+    def describe(self, action: str) -> str:
+        return f"[simulated] {action} {self.unit}".strip()
 
     async def _result(self, action: str) -> CommandResult:
         return CommandResult(
@@ -467,16 +554,19 @@ def build_service(
     if backend == "simulated":
         logger.info("ゲームサーバの制御を空回しします（simulated）")
         return SimulatedService(unit)
-    if backend == "lgsm":
-        logger.info("ゲームサーバの制御に LinuxGSM を使います: %s", command)
-        return LgsmService(command, dry_run=dry_run, timeout=timeout)
-    if backend and backend != "systemd":
-        # 綴り間違いや、この版が知らないバックエンド名。黙って systemd に落ちると
+    if backend == "systemd":
+        # 本番からは廃止済み。手元で systemd 管理のサーバを触るとき用に残している
+        logger.warning(
+            "ゲームサーバの制御に systemd を使います: %s (sudo=%s)。"
+            "この経路は本番では廃止しました（開発用に残しているだけです）",
+            unit, use_sudo,
+        )
+        return SystemdService(unit, dry_run=dry_run, use_sudo=use_sudo, timeout=timeout)
+    if backend:
+        # 綴り間違いや、この版が知らないバックエンド名。黙って既定に落ちると
         # 「設定したつもりの経路と違う」まま動いてしまう（切り戻し時に踏みやすい）
         logger.warning(
-            "PAL_SERVICE_BACKEND=%r は知らない値です。systemd として扱います", backend
+            "PAL_SERVICE_BACKEND=%r は知らない値です。lgsm として扱います", backend
         )
-    logger.info(
-        "ゲームサーバの制御に systemd を使います: %s (sudo=%s)", unit, use_sudo
-    )
-    return SystemdService(unit, dry_run=dry_run, use_sudo=use_sudo, timeout=timeout)
+    logger.info("ゲームサーバの制御に LinuxGSM を使います: %s", command)
+    return LgsmService(command, dry_run=dry_run, timeout=timeout)

@@ -58,7 +58,7 @@ async def test_restart_announces_saves_then_shuts_down(client, app, mock_state):
     step_names = [s["name"] for s in status.steps]
     assert step_names.count("announce") == 3
     assert step_names.index("world_save") < step_names.index("shutdown_api")
-    assert "systemctl_restart" in step_names
+    assert "service_restart" in step_names
 
 
 async def test_announce_template_renders_remaining_time(client, app, mock_state):
@@ -215,8 +215,8 @@ async def test_shutdown_stops_without_restarting(client, app, mock_state):
     assert status.phase == "done"
     assert "停止" in status.message
     step_names = [s["name"] for s in status.steps]
-    assert "systemctl_stop" in step_names
-    assert "systemctl_restart" not in step_names
+    assert "service_stop" in step_names
+    assert "service_restart" not in step_names
     assert all("停止します" in a for a in mock_state.announcements[:3])
 
 
@@ -364,6 +364,8 @@ class BrokenService:
     ときの再現。sudoers を正しく書いても sudo が昇格できず全滅する。
     """
 
+    label = "テスト用サービス"
+
     def __init__(self, *, preflight_ok: bool = False) -> None:
         self.preflight_ok = preflight_ok
         self.calls: list[str] = []
@@ -446,6 +448,240 @@ async def test_failed_restart_still_tries_to_bring_the_server_back(client, app, 
     assert mock_state.shutdowns  # ここまでは進んでいる
 
     step_names = [s["name"] for s in status.steps]
-    assert "systemctl_restart" in step_names
+    assert "service_restart" in step_names
     assert "rescue_start" in step_names
     assert service.calls == ["preflight", "restart", "start"]
+
+
+# ---------------------------------------------------------------------------
+# 進行中のまま固まらないこと（Issue #34）
+#
+# 進行中の表示が残ると、以後の停止も起動も「既に進行中です」で弾かれ、
+# 管理ツールから何も操作できなくなる。実機ではここに嵌まった。
+# ---------------------------------------------------------------------------
+
+
+class HangingService:
+    """systemctl / LinuxGSM が返ってこないサービス。"""
+
+    label = "テスト用サービス"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.started = asyncio.Event()
+
+    async def preflight(self) -> CommandResult:
+        return CommandResult(True, 0, "active", "")
+
+    async def _hang(self, action: str) -> CommandResult:
+        self.calls.append(action)
+        self.started.set()
+        await asyncio.sleep(3600)
+        raise AssertionError("ここには来ない")
+
+    async def start(self) -> CommandResult:
+        return await self._hang("start")
+
+    async def stop(self) -> CommandResult:
+        return await self._hang("stop")
+
+    async def restart(self) -> CommandResult:
+        return await self._hang("restart")
+
+    async def is_active(self) -> bool | None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_stuck_sequence_is_cut_off_by_the_deadline(client, app, mock_state):
+    """どこかで戻らなくなっても、打ち切って終端状態に落とすこと。"""
+    app.state.restart._service = HangingService()
+    app.state.restart.sequence_timeout = 0.2
+
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    assert status.phase == "failed"
+    assert "終わりませんでした" in status.message
+    assert [s["name"] for s in status.steps].count("sequence_timeout") == 1
+    # 打ち切ったあとは次の操作を受け付ける
+    assert (await client.get("/api/restart")).json()["in_progress"] is False
+    assert (await client.post("/api/restart", json=restart_body(force=True))).status_code == 200
+
+    app.state.restart.cancel()
+    await app.state.restart.wait()
+
+
+async def test_stuck_sequence_can_be_released(client, app):
+    """打ち切りを待たずに、操作者が進行状態を解除できること。"""
+    service = HangingService()
+    app.state.restart._service = service
+
+    await client.post("/api/restart", json=restart_body())
+    await asyncio.wait_for(service.started.wait(), timeout=2)
+
+    body = (await client.get("/api/restart")).json()
+    assert body["in_progress"] is True
+    assert body["cancellable"] is False   # 予告は終わっているので取り消せない
+    assert body["releasable"] is True
+    # この状態では停止も再起動も受け付けられない
+    assert (await client.post("/api/shutdown", json=restart_body())).status_code == 409
+
+    resp = await client.post("/api/restart/release", json={"reason": "戻ってこない"})
+    assert resp.status_code == 200
+    assert resp.json()["restart"]["in_progress"] is False
+
+    status = (await client.get("/api/restart")).json()
+    assert status["phase"] == "failed"
+    assert "解除" in status["message"]
+    assert [s["name"] for s in status["steps"]][-1] == "released"
+    # 解除できたので、改めて操作できる
+    assert (await client.post("/api/shutdown", json=restart_body())).status_code == 200
+
+    app.state.restart.cancel()
+    await app.state.restart.wait()
+
+
+async def test_release_does_not_overwrite_the_next_sequence(client, app):
+    """解除したあと、遅れて終わった古いシーケンスが新しい状態を壊さないこと。"""
+    app.state.restart._service = HangingService()
+
+    await client.post("/api/restart", json=restart_body())
+    await _wait_for(lambda: app.state.restart.status.phase == "restarting")
+    assert app.state.restart.release("テスト") is True
+
+    await client.post("/api/restart", json=restart_body(notice_offsets=[30, 10]))
+    # 解除された側のキャンセル処理が走りきるまで回す
+    await asyncio.sleep(0.05)
+
+    assert app.state.restart.status.phase == "announcing"
+    assert app.state.restart.status.as_dict()["in_progress"] is True
+
+    app.state.restart.cancel()
+    await app.state.restart.wait()
+
+
+async def test_release_without_a_sequence_is_409(client):
+    assert (await client.post("/api/restart/release")).status_code == 409
+
+
+async def test_task_killed_before_it_runs_does_not_wedge_the_status(app):
+    """タスクが本体の例外処理を通らずに終わっても、進行中のまま残さないこと。"""
+    manager = app.state.restart
+    await manager.request(reason="テスト", announce_message=MSG, notice_offsets=[30])
+    assert manager.status.phase == "announcing"
+
+    # コルーチンが走り出す前に落とす（本体の except は一度も動かない）
+    manager._task.cancel()
+    await manager.wait()
+
+    assert manager.status.phase == "cancelled"
+    assert manager.status.as_dict()["in_progress"] is False
+    assert manager.in_progress is False
+
+
+# ---------------------------------------------------------------------------
+# 「完了」は起動を見届けてから名乗ること（Issue #34）
+#
+# 起動コマンドはプロセスを起こした時点で返る。それを完了と呼ぶと、
+# 上がってこなかったときに誰も気づけない。
+# ---------------------------------------------------------------------------
+
+
+class RebootingService:
+    """restart / start でモックサーバを実際に起こすサービス。"""
+
+    label = "テスト用サービス"
+
+    def __init__(self, mock_state) -> None:
+        self._state = mock_state
+        self.calls: list[str] = []
+
+    async def preflight(self) -> CommandResult:
+        return CommandResult(True, 0, "active", "")
+
+    def _ok(self, action: str, running: bool) -> CommandResult:
+        self.calls.append(action)
+        self._state.running = running
+        return CommandResult(True, 0, f"[test] {action}", "")
+
+    async def start(self) -> CommandResult:
+        return self._ok("start", True)
+
+    async def restart(self) -> CommandResult:
+        return self._ok("restart", True)
+
+    async def stop(self) -> CommandResult:
+        return self._ok("stop", False)
+
+    async def is_active(self) -> bool | None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_completion_waits_until_the_server_answers(client, app, mock_state, notifier):
+    app.state.restart._service = RebootingService(mock_state)
+    app.state.restart.startup_timeout = 2.0
+
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    assert status.phase == "done"
+    assert status.startup_confirmed is True
+    assert status.startup_seconds is not None
+    assert "wait_until_up" in [s["name"] for s in status.steps]
+    # 復帰までの秒数は通知にも載せる（T-14 の計測をここで賄う）
+    finish = [n for n in notifier.sent if n["title"] == "サーバー再起動が完了しました"][-1]
+    assert "復帰まで" in finish["description"]
+    assert finish["level"] == "info"
+
+
+async def test_completion_says_so_when_the_server_never_answers(client, app, notifier):
+    """コマンドは通ったのに上がってこない。黙って完了と言わないこと。"""
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    # simulated バックエンドはモックサーバを起こさないので上がってこない
+    assert status.phase == "done"
+    assert status.startup_confirmed is False
+    assert "確認できていません" in status.message
+
+    finish = [n for n in notifier.sent if n["title"] == "サーバー再起動が完了しました"][-1]
+    assert finish["level"] == "warn"
+    assert "確認してください" in finish["description"]
+
+
+async def test_stop_sequence_does_not_wait_for_a_startup(client, app, mock_state):
+    """停止シーケンスは上がってこないのが正しい。起動待ちをしないこと。"""
+    await client.post("/api/shutdown", json=restart_body())
+    await app.state.restart.wait()
+
+    status = app.state.restart.status
+    assert status.phase == "done"
+    assert status.startup_confirmed is None
+    assert "wait_until_up" not in [s["name"] for s in status.steps]
+
+
+async def test_abort_notice_names_the_real_backend(client, app, notifier):
+    """LinuxGSM 構成なのに「systemctl が…」と書かないこと。
+
+    ステップ名も通知文もバックエンド中立にしてある。実体と違う名前で
+    報告されると、切り分けが的外れな方向に進む。
+    """
+    service = BrokenService()
+    service.label = "pwserver"
+    app.state.restart._service = service
+
+    await client.post("/api/restart", json=restart_body())
+    await app.state.restart.wait()
+
+    crit = [e for e in notifier.sent if e.get("level") == "crit"][-1]
+    assert "pwserver を実行できませんでした" in crit["description"]
+    assert "systemctl" not in crit["description"]

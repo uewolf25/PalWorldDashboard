@@ -125,7 +125,7 @@ class Monitor:
     def suppress_downtime_alerts(self, seconds: float) -> None:
         """この先 seconds 秒は「応答なし」を通知しない。
 
-        systemctl start はプロセスを起こした時点で返るが、実機の Palworld が
+        起動コマンドはプロセスを起こした時点で返るが、実機の Palworld が
         接続を受け付けるまでは数十秒かかる。その間の「応答なし」は誤報で、
         毎回の再起動で飛ぶと本物の障害通知が埋もれる。
         """

@@ -241,30 +241,37 @@ def _unit_directives(name: str) -> list[str]:
     ]
 
 
-def test_the_game_server_unit_template_does_not_restart_itself():
-    """管理ツールが shutdown API で落とした隙に systemd が起動し直すのを防ぐ（R-06）。
+def test_the_unit_can_drop_privilege_escalation():
+    """LinuxGSM 構成では特権昇格を使わないので、これを付けられる。
 
-    起こし直す役目は管理ツール側（rescue_start）が持っている。
-    """
-    directives = _unit_directives("palworld.service.example")
-    assert "Restart=no" in directives
-    assert not any(d.startswith("Restart=always") for d in directives)
-
-
-def test_the_game_server_unit_template_waits_for_the_world_save():
-    """既定の 90 秒だとワールドが育ったとき保存中に SIGKILL される（R-05）。"""
-    directives = _unit_directives("palworld.service.example")
-    assert "TimeoutStopSec=300" in directives
-
-
-def test_the_unit_does_not_set_no_new_privileges():
-    """issue #28: NoNewPrivileges は setuid の sudo を必ず無効化する。
-
-    付けた瞬間 start/stop/restart/is-active が全部失敗するのに、
-    sudoers を疑って延々ハマる形になるので、ユニット側で固定しておく。
+    issue #28 は sudo と NoNewPrivileges の同居で全操作が失敗した件。
+    ゲームサーバの systemd 運用をやめて sudo ごと無くしたので、
+    今度は**付いていること**が正しい状態になる。
     """
     directives = _unit_directives("dashboard-Pal.service")
-    assert not any(line.startswith("NoNewPrivileges") for line in directives)
+    assert "NoNewPrivileges=true" in directives
+
+
+def test_the_unit_keeps_tmp_shared_for_linuxgsm():
+    """PrivateTmp=true にすると tmux のソケットが見えなくなる。
+
+    LinuxGSM は /tmp/tmux-<uid>/ にソケットを作る。名前空間が分かれると、
+    SSH から起動したセッションを管理ツールが掴めず、停止も状態確認もすれ違う。
+    """
+    directives = _unit_directives("dashboard-Pal.service")
+    assert "PrivateTmp=false" in directives
+    assert "PrivateTmp=true" not in directives
+
+
+def test_no_game_server_unit_template_is_shipped():
+    """ゲームサーバの systemd 運用は本番から廃止した。
+
+    雛形を残しておくと、次に構築する人がそちらへ戻してしまう。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    assert not (root / "palworld.service.example").exists()
 
 
 # ---- R-08 メンテ中の誤警報 -------------------------------------------------

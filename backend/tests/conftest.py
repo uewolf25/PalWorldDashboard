@@ -87,6 +87,9 @@ def settings(tmp_path: Path, ini_path: Path) -> Settings:
         restart_notice_offsets="0.06,0.03,0.01",
         restart_shutdown_wait=0,
         restart_debounce_sec=0.0,
+        # simulated バックエンドはモックサーバを起こさないので、
+        # 既定の180秒だと起動待ちで毎回待たされる
+        restart_startup_timeout=0.05,
         monitor_interval=3600.0,
         log_source="none",
     )

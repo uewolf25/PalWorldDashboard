@@ -152,5 +152,26 @@ async def test_service_action_is_recorded(client):
     assert all(r["to_game"] is False for r in records)
 
 
+async def test_service_action_records_the_real_command(settings, pal_client, notifier, tmp_path):
+    """実際に走ったコマンドを残す。systemd 前提の決め打ちだと構成次第で嘘になる。"""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import create_app
+
+    script = tmp_path / "pwserver"
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    settings.pal_service_backend = "lgsm"
+    settings.pal_service_command = str(script)
+
+    app = create_app(settings, pal_client=pal_client, notifier=notifier, start_background=False)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://manager") as c:
+        assert (await c.post("/api/service/start", json={"reason": "朝の起動"})).status_code == 200
+        records = (await c.get("/api/announcements?source=system")).json()["records"]
+
+    assert any(f"{script} start" in r["message"] for r in records)
+    assert not any("systemctl" in r["message"] for r in records)
+
+
 async def test_unknown_service_action_is_rejected(client):
     assert (await client.post("/api/service/reload", json={})).status_code == 400
