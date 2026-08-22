@@ -210,6 +210,14 @@ systemctl show dashboard-Pal -p KillMode                          # KillMode=pro
 `Found left-over process ... (tmux) in control group while starting unit. Ignoring.`
 が出る。**これは正常**（残っていてほしいものが残っている）。
 
+逆方向の道連れも塞いである。ゲームサーバが OOM killer に殺されたとき、
+既定の `OOMPolicy=stop` だと systemd が管理ツールまで止めてしまい、復旧操作が
+できなくなる。ユニットには `OOMPolicy=continue` を入れてある。
+
+```bash
+systemctl show dashboard-Pal -p KillMode -p OOMPolicy
+```
+
 ### シーケンスのステップ名と、その実体
 
 journal と `/api/restart` に出るステップ名は**バックエンド中立**にしてある。

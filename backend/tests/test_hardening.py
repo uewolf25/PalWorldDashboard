@@ -274,6 +274,9 @@ def test_the_unit_does_not_take_the_game_server_down_with_it():
     """
     directives = _unit_directives("dashboard-Pal.service")
     assert "KillMode=process" in directives
+    # 逆向きも同じこと。ゲームサーバが OOM で殺されたときに、既定の
+    # OOMPolicy=stop だと管理ツールまで止まり、復旧操作ができなくなる
+    assert "OOMPolicy=continue" in directives
 
 
 def test_the_unit_does_not_cap_resources():

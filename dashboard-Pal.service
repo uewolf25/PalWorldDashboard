@@ -28,6 +28,11 @@ RestartSec=5
 # ゲームサーバごと締めることになるので、この2つは入れないこと。
 KillMode=process
 
+# 逆方向の道連れも塞ぐ。ゲームサーバが同じ cgroup に居るので、カーネルの
+# OOM killer がゲームを殺すと、既定（OOMPolicy=stop）では systemd が
+# このユニットまで止めてしまう。管理ツールが落ちると復旧操作もできなくなる
+OOMPolicy=continue
+
 # バックアップとスケジュール定義の保存先
 StateDirectory=dashboard-Pal
 RuntimeDirectory=dashboard-Pal
