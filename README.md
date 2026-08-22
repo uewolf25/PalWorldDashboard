@@ -440,6 +440,38 @@ mise run test
 | `test_monitor.py` | メトリクス記録、メモリ閾値アラートと cooldown、サーバ up/down 検知、ログ配信 |
 | `test_logstream_levels.py` | ログ行の区分判定、管理ツール自身のログが stderr（＝journald）にも出ること、LOG_LEVEL の切り替えと不正値の扱い |
 
+## バージョン
+
+版番号は `backend/app/__init__.py` の `__version__` が出どころ。ここだけを直す。
+
+| どこに出るか | 見え方 |
+|--------------|--------|
+| 画面のサイドバー | 環境バッジの隣に `v1.0.0` |
+| `GET /api/config` | `version` フィールド（未ログインでも見える） |
+| `/docs` の OpenAPI | スキーマの `info.version` |
+
+区切りで git のタグを打ち、GitHub Release にする。
+
+```bash
+# 1. __version__ を上げてコミット・マージまで済ませてから main で
+git switch main && git pull
+# 2. 注釈付きタグ（軽量タグは使わない。git describe で拾えるように）
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
+# 3. リリースノートは前のタグからのコミットで自動生成
+gh release create v1.0.0 --generate-notes
+```
+
+番号の付け方は [SemVer](https://semver.org/lang/ja/) に合わせる。
+機能追加は MINOR（1.1.0）、修正だけなら PATCH（1.0.1）、
+環境変数の意味が変わるなど**入れ替えに手作業が要る変更**のときは MAJOR（2.0.0）。
+
+実機に入っている版は、画面のサイドバーか次のコマンドで確認できる。
+
+```bash
+cd /opt/dashboard-Pal && git describe --tags
+```
+
 ## 本番デプロイ
 
 ### 1. Palworld 側で REST API を有効にする

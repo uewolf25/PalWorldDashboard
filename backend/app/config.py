@@ -10,6 +10,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import __version__
+
 
 def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default).strip()
@@ -317,6 +319,8 @@ class Settings:
             return mask_secret(value) if authenticated else "********"
 
         return {
+            # 実機に何が入っているかを画面から見えるようにする。伏せる理由は無い
+            "version": __version__,
             "env": self.env,
             "pal_base_url": self.pal_base_url,
             "pal_admin_user": self.pal_admin_user if authenticated else "",
