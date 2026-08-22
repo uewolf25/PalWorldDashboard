@@ -175,6 +175,15 @@ tbody tr:hover { background: rgba(23,51,75,.45); }
   background: var(--card); border: 1px solid var(--line2);
   border-radius: var(--radius); overflow-x: auto;
 }
+/* 短い値。折り返させると1〜2文字ずつ縦に割れて読めなくなる */
+.nowrap { white-space: nowrap; }
+/* 折り返してよい列にも下限は要る。幅が足りないときは列を潰さず、
+   .tablewrap の横スクロールに逃がす */
+th.wrap, td.wrap { min-width: 130px; }
+/* 列数が多いぶん、左右の余白は少し詰める */
+.cardtable th, .cardtable td { padding-left: 12px; padding-right: 12px; }
+/* 操作ボタンは1行に並べる（カード表示では下で折り返しに戻す） */
+.tablewrap td.acts .row { flex-wrap: nowrap; }
 .mono { font-family: var(--mono); }
 
 /* --- ボタン --- */
@@ -416,6 +425,20 @@ textarea {
 .charthead .sub { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .charthead .now { margin-left: auto; font-family: var(--mono); font-size: 20px; font-weight: 700; }
 .chartgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+/* 本文（表・地図）と補足パネルを左右に置く版。
+   インラインの style で書くと media query より強く、狭い画面で縦に積めない */
+.chartgrid.split { grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); }
+
+/* スケジュール: 上段に「次の予約」と補足、下段に一覧。
+   一覧は列が多く、横に補足を置くと各列が潰れるので幅を全部渡す */
+.schedgrid {
+  display: grid; gap: 16px; align-items: start;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  grid-template-areas: "next note" "list list";
+}
+.schedgrid > :nth-child(1) { grid-area: list; }
+.schedgrid > :nth-child(2) { grid-area: next; }
+.schedgrid > :nth-child(3) { grid-area: note; }
 .axis {
   display: flex; justify-content: space-between; margin-top: 8px;
   font-family: var(--mono); font-size: 11px; color: var(--muted2);
@@ -503,11 +526,45 @@ canvas.chart { aspect-ratio: 900 / 200; }
   .dashgrid { grid-template-columns: 1fr; }
   /* 250px なら iPad mini 縦（本文 528px）でも2列に収まる */
   .fieldgrid, .pcards { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
-  .chartgrid { grid-template-columns: 1fr; }
+  .chartgrid, .chartgrid.split { grid-template-columns: 1fr; }
+  /* 「次に何が起きるか」を先に読ませ、補足は一覧のあとに回す */
+  .schedgrid { grid-template-columns: 1fr; grid-template-areas: "next" "list" "note"; }
 
   /* 表は詰めずに横スクロールさせる。潰すと折り返して桁が読めなくなる */
   .tablewrap { -webkit-overflow-scrolling: touch; }
   .tablewrap table { min-width: 560px; }
+
+  /* 列が多い表（スケジュール）は 560px に詰めても各列が細すぎ、1文字ずつ
+     折り返して読めなくなる。1行を1枚のカードに組み替える。
+     見出し行は消し、各セルの見出しは data-label から出す */
+  .cardtable { background: transparent; border: 0; border-radius: 0; overflow: visible; }
+  .cardtable table { min-width: 0; display: block; }
+  .cardtable thead { display: none; }
+  .cardtable tbody { display: block; }
+  .cardtable tbody tr {
+    display: block; margin-bottom: 12px; padding: 4px 0 6px;
+    background: var(--card); border: 1px solid var(--line2); border-radius: var(--radius);
+  }
+  .cardtable tbody tr:last-child { margin-bottom: 0; }
+  .cardtable tbody tr:hover { background: var(--card); }
+  .cardtable td {
+    display: grid; grid-template-columns: 84px minmax(0, 1fr);
+    gap: 12px; align-items: baseline; padding: 7px 16px; border-bottom: 0;
+  }
+  .cardtable td::before {
+    content: attr(data-label);
+    color: var(--muted2); font-family: var(--mono); font-size: 11px;
+  }
+  /* 見出しは ::before が1列目を埋めるので、中身は2列目に揃える */
+  .cardtable td > * { grid-column: 2; }
+  /* 先頭セルはカードの見出しにする。ラベルを付けても情報が増えない */
+  .cardtable td.head { display: block; font-size: 16px; padding: 12px 16px 8px; }
+  .cardtable td.head::before { content: none; }
+  /* 操作ボタンは幅いっぱいに並べる。指で押せる大きさを優先する */
+  .cardtable td.acts { display: block; padding: 6px 16px 12px; }
+  .cardtable td.acts::before { content: none; }
+  .cardtable td.acts .row { flex-wrap: wrap; }
+  .cardtable td.acts .btn { flex: 1 1 auto; }
 }
 
 /* --- 横幅が足りない: サイドバーを引き出しにする --- */
@@ -1904,7 +1961,7 @@ function renderWorld(root) {
   ]));
 
   // 左に地図、右にセーブ情報。狭い画面では縦に積む
-  root.appendChild(el("div", { class: "chartgrid", style: "grid-template-columns:minmax(0,2fr) minmax(260px,1fr)" }, [
+  root.appendChild(el("div", { class: "chartgrid split" }, [
     el("div", null, [
       el("div", { class: "panel", style: "padding:16px" }, canvas),
       el("h2", { text: "異常検知" }),
@@ -3328,59 +3385,57 @@ function renderSchedules(root) {
   if (note) root.appendChild(note);
 
   const list = el("div");
-  const side = el("div");
-  root.appendChild(el("div", { class: "chartgrid", style: "grid-template-columns:minmax(0,2fr) minmax(280px,1fr)" }, [
-    list, side,
-  ]));
+  const next = el("div");
+  const howto = el("div", { class: "panel" }, [
+    el("div", { style: "font-size:14px;font-weight:700;margin-bottom:10px", text: "メンテ枠の作り方" }),
+    el("div", { class: "small muted",
+      text: "設定ファイルを変更したい場合は「停止」と「起動」を別々に予約してメンテ枠を作り、"
+          + "停止が完了してからゲーム設定タブで編集してください"
+          + "（サーバは停止時に設定ファイルを上書きするため、停止前の編集は失われます）。" }),
+  ]);
+  root.appendChild(el("div", { class: "schedgrid" }, [list, next, howto]));
 
   /** 次に動く予約を目立たせる。一覧だけだと「次に何が起きるか」が読み取りにくい */
   function paintNext(schedules) {
-    clear(side);
-    const next = schedules.find(s => s.enabled && s.next_action_at);
-    if (!next) {
-      side.appendChild(el("div", { class: "panel muted", text: "有効な予約はありません" }));
+    clear(next);
+    const s = schedules.find(x => x.enabled && x.next_action_at);
+    if (!s) {
+      next.appendChild(el("div", { class: "panel muted", text: "有効な予約はありません" }));
     } else {
-      const at = new Date(next.next_action_at);
+      const at = new Date(s.next_action_at);
       const remain = Math.max(0, (at.getTime() - Date.now()) / 1000);
-      side.appendChild(el("div", {
+      next.appendChild(el("div", {
         class: "panel",
         style: "background:linear-gradient(160deg,#153854,#102a3f);border-color:#21455f",
       }, [
         el("div", { style: "font-size:15px;font-weight:700;margin-bottom:14px", text: "次に実行される予約" }),
         el("div", { class: "row", style: "gap:8px;margin-bottom:10px" }, [
-          el("span", { class: "tag-changed", text: next.action_label }),
+          el("span", { class: "tag-changed", text: s.action_label }),
           el("span", { class: "tag-added", style: "background:#17334b;color:#9dbdd6",
-            text: { daily: "毎日", once: "単発", cron: "cron" }[next.kind] || next.kind }),
-          next.skip_next ? el("span", { class: "tag-unknown", text: "今回は見送り" }) : null,
+            text: { daily: "毎日", once: "単発", cron: "cron" }[s.kind] || s.kind }),
+          s.skip_next ? el("span", { class: "tag-unknown", text: "今回は見送り" }) : null,
         ]),
         el("div", { class: "mono", style: "font-size:22px;font-weight:700;color:#fff",
-          text: fmtTime(next.next_action_at) }),
+          text: fmtTime(s.next_action_at) }),
         el("div", { class: "mono small muted", style: "margin-top:8px",
-          text: next.skip_next ? "この回は実行されません" : "あと " + fmtDuration(remain) }),
-        next.pending_changes
+          text: s.skip_next ? "この回は実行されません" : "あと " + fmtDuration(remain) }),
+        s.pending_changes
           ? el("div", { class: "small muted", style: "margin-top:12px",
-              text: "保留中の設定変更 " + next.pending_changes + " 件を同時に反映します。" })
+              text: "保留中の設定変更 " + s.pending_changes + " 件を同時に反映します。" })
           : null,
         el("div", { class: "row", style: "margin-top:16px" }, [
           gate(el("button", {
             class: "btn small", text: "編集", style: "flex:1",
-            onclick: () => openScheduleModal(next, load),
+            onclick: () => openScheduleModal(s, load),
           })),
           gate(el("button", {
-            class: "btn small", text: next.skip_next ? "見送りをやめる" : "今回はスキップ",
+            class: "btn small", text: s.skip_next ? "見送りをやめる" : "今回はスキップ",
             style: "flex:1",
-            onclick: () => toggleSkip(next),
+            onclick: () => toggleSkip(s),
           })),
         ]),
       ]));
     }
-    side.appendChild(el("div", { class: "panel", style: "margin-top:20px" }, [
-      el("div", { style: "font-size:14px;font-weight:700;margin-bottom:10px", text: "メンテ枠の作り方" }),
-      el("div", { class: "small muted",
-        text: "設定ファイルを変更したい場合は「停止」と「起動」を別々に予約してメンテ枠を作り、"
-            + "停止が完了してからゲーム設定タブで編集してください"
-            + "（サーバは停止時に設定ファイルを上書きするため、停止前の編集は失われます）。" }),
-    ]));
   }
 
   async function toggleSkip(s) {
@@ -3477,37 +3532,59 @@ function renderSchedules(root) {
       list.appendChild(el("div", { class: "panel muted", text: "予約はありません" }));
       return;
     }
-    const wrap = el("div", { class: "tablewrap" });
+    // 列を増やすほど1列あたりが細くなり、日本語は1文字ずつ折り返してしまう。
+    // 「繰り返し + 指定」「動作 + 状態」はまとめ、設定変更の列は要るときだけ出す。
+    // 狭い画面ではそれでも足りないので、data-label を持たせて
+    // カード表示（.cardtable）に組み替えられるようにしておく
+    const anyPending = data.schedules.some(s => s.pending_changes);
+    const wrap = el("div", { class: "tablewrap cardtable" });
     const table = el("table");
+    const heads = [
+      { text: "動作" }, { text: "スケジュール" }, { text: "メモ", cls: "wrap" },
+      { text: "予告", cls: "wrap" },
+      ...(anyPending ? [{ text: "設定変更" }] : []),
+      { text: "次回実行" }, { text: "" },
+    ];
     table.appendChild(el("thead", null, el("tr", null,
-      ["動作", "繰り返し", "指定", "メモ", "予告", "設定変更", "次回実行", "状態", ""]
-        .map(h => el("th", { text: h })))));
+      heads.map(h => el("th", { class: "nowrap " + (h.cls || ""), text: h.text })))));
     const tbody = el("tbody");
     for (const s of data.schedules) {
       const offsets = s.notice_offsets && s.notice_offsets.length
         ? s.notice_offsets.map(offsetLabel).join(" / ") : "既定";
+      const kindLabel = { daily: "毎日", once: "単発", cron: "cron" }[s.kind] || s.kind;
       tbody.appendChild(el("tr", null, [
-        el("td", null, el("strong", { text: s.action_label || ACTION_LABELS[s.action] || s.action })),
-        el("td", { text: { daily: "毎日", once: "単発", cron: "cron" }[s.kind] || s.kind }),
-        el("td", { text: s.spec }),
-        el("td", { text: s.label || "-" }),
+        el("td", { class: "head" }, el("div", { class: "row", style: "gap:8px" }, [
+          el("strong", { class: "nowrap",
+                         text: s.action_label || ACTION_LABELS[s.action] || s.action }),
+          s.skip_next
+            ? el("span", { class: "tag-unknown", text: "今回は見送り" })
+            : el("span", { class: "small" + (s.enabled ? " muted" : ""),
+                           text: s.enabled ? "有効" : "無効" }),
+        ])),
+        el("td", { class: "mono", "data-label": "スケジュール" },
+          el("div", null, [
+            el("span", { class: "nowrap", text: kindLabel }), " ",
+            el("span", { class: "nowrap", text: s.spec }),
+          ])),
+        el("td", { class: "wrap", "data-label": "メモ", text: s.label || "-" }),
         s.announced
-          ? el("td", null, [
+          ? el("td", { class: "wrap", "data-label": "予告" }, [
               el("div", { class: "small", text: offsets }),
               el("div", { class: "muted small", text: s.announce_message || "既定の文面" }),
             ])
-          : el("td", { class: "muted small", text: "予告なし" }),
-        s.pending_changes
-          ? el("td", null, el("span", { class: "tag-added", text: s.pending_changes + " 件反映" }))
-          : el("td", { class: "muted small", text: "-" }),
-        el("td", { class: "mono", text: fmtTime(s.next_action_at) }),
-        el("td", null, s.skip_next
-          ? el("span", { class: "tag-unknown", text: "今回は見送り" })
-          : el("span", { class: s.enabled ? "" : "muted", text: s.enabled ? "有効" : "無効" })),
-        el("td", null, el("div", { class: "row" }, [
+          : el("td", { class: "wrap muted small", "data-label": "予告", text: "予告なし" }),
+        anyPending
+          ? (s.pending_changes
+              ? el("td", { "data-label": "設定変更" },
+                  el("span", { class: "tag-added nowrap", text: s.pending_changes + " 件反映" }))
+              : el("td", { class: "muted small", "data-label": "設定変更", text: "-" }))
+          : null,
+        el("td", { class: "mono nowrap", "data-label": "次回実行", text: fmtTime(s.next_action_at) }),
+        el("td", { class: "acts" }, el("div", { class: "row" }, [
           gate(el("button", { class: "btn small", text: "編集", onclick: () => openScheduleModal(s, load) })),
           gate(el("button", {
-            class: "btn small", text: s.skip_next ? "見送りをやめる" : "今回はスキップ",
+            class: "btn small", text: s.skip_next ? "見送り解除" : "スキップ",
+            title: s.skip_next ? "見送りを取り消します" : "次の1回だけ実行を見送ります",
             onclick: () => toggleSkip(s),
           })),
           gate(el("button", {
