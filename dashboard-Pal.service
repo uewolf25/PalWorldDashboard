@@ -13,6 +13,26 @@ ExecStart=/opt/dashboard-Pal/backend/.venv/bin/uvicorn app.main:app --host ${APP
 Restart=always
 RestartSec=5
 
+# ★ 管理ツールの停止/再起動でゲームサーバを道連れにしないための必須設定。
+#
+# LinuxGSM の start はゲームを tmux に預ける。その tmux とゲーム本体は
+# 管理ツールの子プロセスとして生まれるので、**このユニットの cgroup に入る**。
+# 既定の KillMode=control-group だと systemd は停止時に cgroup 内を全部殺すため、
+# 管理ツールを再起動しただけでゲームサーバまで落ちる。
+#
+# process にすると、停止時に殺すのは Main PID（uvicorn）だけになる。
+# 残ったゲームサーバは次の起動時に "Found left-over process ... Ignoring" と
+# 記録されるが、そのまま動き続ける（それが正しい）。
+#
+# cgroup に同居している影響は他にもある。MemoryMax / CPUQuota の類を足すと
+# ゲームサーバごと締めることになるので、この2つは入れないこと。
+KillMode=process
+
+# 逆方向の道連れも塞ぐ。ゲームサーバが同じ cgroup に居るので、カーネルの
+# OOM killer がゲームを殺すと、既定（OOMPolicy=stop）では systemd が
+# このユニットまで止めてしまう。管理ツールが落ちると復旧操作もできなくなる
+OOMPolicy=continue
+
 # バックアップとスケジュール定義の保存先
 StateDirectory=dashboard-Pal
 RuntimeDirectory=dashboard-Pal

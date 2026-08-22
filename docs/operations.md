@@ -166,6 +166,58 @@ journalctl -u dashboard-Pal -p warning --since today | grep -iE "preflight|syste
 > `sudo: The "no new privileges" flag is set` や `sudo: a password is required`
 > が出るなら、構成が systemd に戻っている（issue #28 の症状）。
 
+### 管理ツールを再起動したらゲームサーバも落ちた
+
+**ユニットの `KillMode=process` が抜けている。** これが無いと、管理ツールの
+停止・再起動・自動再起動（`Restart=always`）のたびにゲームサーバが道連れになる。
+
+LinuxGSM の `start` はゲームを tmux に預けるが、その tmux とゲーム本体は
+管理ツールの子プロセスとして生まれるため、**`dashboard-Pal.service` の cgroup に入る**。
+既定の `KillMode=control-group` は停止時に cgroup 内を全部殺す。
+
+同居しているかは次で分かる。
+
+```bash
+systemctl status dashboard-Pal | sed -n '/CGroup/,$p' | head
+```
+
+```
+CGroup: /system.slice/dashboard-Pal.service
+  ├─2008184 .../uvicorn app.main:app ...          ← 管理ツール本体
+  ├─2010944 tmux -L pwserver-18d661ff ...         ← LinuxGSM の tmux
+  ├─2010945 ./PalServer-Linux-Shipping ...        ← ★ ゲーム本体
+  ├─2010949 cat                                   ← tmux のログ書き出し
+  └─2011196 .../crashpad_handler ...
+```
+
+対処は1行足して読み直すだけ。**管理ツールの再起動は要らない**（要らないどころか、
+直す前に再起動するとゲームが落ちる）。
+
+```bash
+sudo grep -n KillMode /etc/systemd/system/dashboard-Pal.service   # 無ければ足す
+sudo systemctl daemon-reload
+systemctl show dashboard-Pal -p KillMode                          # KillMode=process になっていること
+```
+
+同居自体は解消しない（cgroup は親子関係で決まる）。実害は2つに絞られる。
+
+- 停止時に殺されること → `KillMode=process` で解決
+- **資源制限がゲームサーバにも掛かること** → `MemoryMax` / `MemoryHigh` /
+  `CPUQuota` / `TasksMax` をこのユニットに足さないこと。`systemctl status` の
+  `Memory:` にゲームの使用量が乗るのも同じ理由（管理ツール自身は数十MB）
+
+停止後にゲームだけ残るので、次の起動時に journal へ
+`Found left-over process ... (tmux) in control group while starting unit. Ignoring.`
+が出る。**これは正常**（残っていてほしいものが残っている）。
+
+逆方向の道連れも塞いである。ゲームサーバが OOM killer に殺されたとき、
+既定の `OOMPolicy=stop` だと systemd が管理ツールまで止めてしまい、復旧操作が
+できなくなる。ユニットには `OOMPolicy=continue` を入れてある。
+
+```bash
+systemctl show dashboard-Pal -p KillMode -p OOMPolicy
+```
+
 ### シーケンスのステップ名と、その実体
 
 journal と `/api/restart` に出るステップ名は**バックエンド中立**にしてある。
