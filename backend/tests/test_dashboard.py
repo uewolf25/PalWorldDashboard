@@ -136,6 +136,25 @@ async def test_config_masks_secrets(settings, pal_client, notifier):
     assert "mockpass" not in body["pal_admin_password"]
 
 
+async def test_config_exposes_version(settings, pal_client, notifier):
+    """実機に入っている版を画面から見えるようにする。
+
+    出どころは app/__init__.py の1か所だけ。ここが OpenAPI と /api/config の
+    両方に出るので、片方だけ古い番号が残ることが無いようにしておく。
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from app import __version__
+    from app.main import create_app
+
+    app = create_app(settings, pal_client=pal_client, notifier=notifier, start_background=False)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://manager") as c:
+        body = (await c.get("/api/config")).json()
+
+    assert body["version"] == __version__
+    assert app.version == __version__
+
+
 @pytest.mark.parametrize("path", ["/api/status", "/api/players", "/api/config"])
 async def test_viewing_stays_open_when_password_set(settings, pal_client, notifier, path):
     """パスワードを設定しても閲覧は誰でもできる（Issue #15 の追加実装）。"""

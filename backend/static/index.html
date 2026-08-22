@@ -78,6 +78,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--accent-dim); color: #67c7f5;
 }
 .badge.production { background: #40202a; color: #ff8f8f; }
+/* 実機に入っている版。環境バッジの隣で、主張はさせない */
+.brand .ver { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--muted2); }
 .navgroup { display: flex; flex-direction: column; gap: 4px; margin-top: 22px; }
 .navsep { height: 1px; background: var(--line); margin: 10px 14px; }
 .navbtn {
@@ -1184,9 +1186,13 @@ function buildSidebar() {
   const bar = $("sidebar");
   clear(bar);
   const env = state.config ? state.config.env : "";
+  const ver = state.config ? state.config.version : "";
   bar.appendChild(el("div", { class: "brand" }, [
     el("div", { text: APP_NAME }),
-    env ? el("span", { class: "badge " + env, text: env }) : null,
+    el("div", { class: "row", style: "gap:8px" }, [
+      env ? el("span", { class: "badge " + env, text: env }) : null,
+      ver ? el("span", { class: "ver", text: "v" + ver }) : null,
+    ]),
   ]));
 
   const group = (ids) => {

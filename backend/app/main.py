@@ -16,6 +16,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import __version__
 from .announce import AnnouncementLog, Announcer
 from .auth import (
     COOKIE_NAME,
@@ -379,7 +380,7 @@ def create_app(
             await notify.aclose()
             await service.aclose()
 
-    app = FastAPI(title="Palworld Server Manager", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Palworld Server Manager", version=__version__, lifespan=lifespan)
 
     # 依存から触れるようにまとめて持たせる
     app.state.cfg = cfg
