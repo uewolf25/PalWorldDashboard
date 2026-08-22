@@ -4,3 +4,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .DS_Store
+
+# pyenv / mise がマシンごとに作るバージョン指定。
+# 本番では構築手順で /opt/dashboard-Pal/.python-version を作る（README 参照）。
+# 中身が環境ごとに違う（例: 3.13 と 3.13.5）ので追跡しない
+.python-version

@@ -545,7 +545,30 @@ sudo systemctl restart dashboard-Pal
 ```
 
 `/etc/dashboard-Pal.env` と `/etc/systemd/system/dashboard-Pal.service` は `/opt` の外にあるので
-`git pull` では上書きされない。`dashboard-Pal.env.example` に項目が増えていないかだけ確認する。
+`git pull` では上書きされない。**env を見本で上書きしないこと**（パスワードと Webhook URL が
+入っている）。更新のたびに確認するのは次の2つだけ。
+
+```bash
+# 1. 設定項目が増減していないか（値は見ず、キー名だけ比べる）
+diff <(grep -oE '^[A-Z_]+=' /opt/dashboard-Pal/dashboard-Pal.env.example | sort) \
+     <(sudo grep -oE '^[A-Z_]+=' /etc/dashboard-Pal.env | sort)
+
+# 2. ユニットファイルが変わっていないか
+diff /opt/dashboard-Pal/dashboard-Pal.service /etc/systemd/system/dashboard-Pal.service
+```
+
+1 で `<` 側だけに出たキーが**増えた項目**、`>` 側だけのキーが**廃止された項目**。
+増えた項目は見本のコメントを読んで手で書き足す（未設定でも既定値で動くものが多い）。
+
+2 に差分が出たらコピーし直す。**★ の箇所（`ReadWritePaths`）は環境ごとに違う**ので、
+コピー後に必ず直すこと。
+
+```bash
+sudo cp /opt/dashboard-Pal/dashboard-Pal.service /etc/systemd/system/
+sudo nano /etc/systemd/system/dashboard-Pal.service
+sudo systemctl daemon-reload
+sudo systemctl restart dashboard-Pal
+```
 
 ### 4. 環境変数
 
