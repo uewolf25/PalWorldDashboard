@@ -248,7 +248,7 @@ Discord Webhook に対応（Bot 連携は未実装）。流すのは次のとき
 │   │   ├── notify.py        Discord Webhook
 │   │   └── services.py      ゲームサーバのプロセス制御（LinuxGSM / 開発用モック）
 │   ├── static/index.html    フロントエンド（これ1枚）
-│   ├── tests/               pytest（548件）
+│   ├── tests/               pytest（550件）
 │   └── requirements.txt
 ├── mock/mock_palworld.py    モック Palworld REST API
 ├── scripts/dev.sh           ローカル開発用の一括起動
@@ -619,6 +619,13 @@ sudo chmod g+w "$INI"
 **tmux のソケットが見えること** — `PrivateTmp=false` にすること。`true` だと
 管理ツールから見える `/tmp` が別の名前空間になり、SSH から起動したセッションを
 掴めない（その逆も）。停止も状態確認もすれ違う。
+
+**ゲームサーバを道連れにしないこと** — `KillMode=process` を必ず入れる。
+LinuxGSM の `start` はゲームを tmux に預けるが、その tmux とゲーム本体は
+管理ツールの子として生まれるので**このユニットの cgroup に入る**。既定の
+`control-group` のままだと、管理ツールを再起動しただけでゲームサーバが落ちる。
+同じ理由で、`MemoryMax` / `CPUQuota` のような資源制限をこのユニットに足さないこと
+（ゲームサーバごと締めることになる）。
 
 ```bash
 ls -la /tmp/tmux-$(id -u)/      # LinuxGSM のソケットが見えるか

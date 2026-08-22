@@ -52,7 +52,7 @@ cd /opt/dashboard-Pal && python3 scripts/check_secrets.py
 | `test_logstream_levels.py` | 33 | ログ行の区分判定、stderr（＝journald）への出力、`LOG_LEVEL` の切り替えと不正値 |
 | `test_world.py` | 30 | ワールドセーブのバックアップ、世代管理、復元、パストラバーサル防止 |
 | `test_presence.py` | 29 | 入退室の検知と履歴、永続化 |
-| `test_hardening.py` | 29 | 実機投入前に潰したリスク（タイムアウト分離、停止待ち、inode 保持、サンドボックスの要件、誤警報抑止、キャッシュ） |
+| `test_hardening.py` | 31 | 実機投入前に潰したリスク（タイムアウト分離、停止待ち、inode 保持、サンドボックスの要件、**ゲームサーバを道連れにしないこと**、誤警報抑止、キャッシュ） |
 | `test_pending.py` | 28 | 稼働中の保存、停止シーケンスでの自動反映、予約への紐づけ、反映失敗時の復旧、永続化 |
 | `test_dashboard.py` | 17 | ステータス、プレイヤー一覧、キック/BAN/UNBAN、操作の認証、秘密情報の伏字化 |
 | `test_announce.py` | 18 | アナウンス履歴の記録・永続化・上限・フィルタ、送信失敗の記録、サーバ操作に実行したコマンドが残ること |
@@ -217,6 +217,15 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 | 期待 | `phase=done` になった時点でバナーが消え、停止・起動・再起動が受け付けられる |
 | NG の見方 | 「(restarting) …」のまま戻らない → journal でどのステップで止まったか見る（下記）。復旧はバナーの「解除」ボタン、または `curl -XPOST localhost:8080/api/restart/release`。**解除はサーバへの指示を取り消さない**ので、解除後は必ずサーバの生死を確認する |
 | 備考 | `journalctl -u dashboard-Pal --since "-30min" \| grep シーケンス` に各ステップの所要時刻が出る。最後に出たステップの**次**で止まっている。ステップ間が `PAL_SERVICE_TIMEOUT`（既定300秒）ちょうど空いていたら、起動/停止コマンドが返っていない |
+
+| ID | T-14c |
+|---|---|
+| 目的 | **管理ツールの再起動でゲームサーバが落ちないこと**（最優先） |
+| 前提 | ゲームサーバが稼働中。`systemctl status dashboard-Pal` の CGroup に `PalServer-Linux-Shipping` が居ること（管理ツールから起動した場合はこうなる） |
+| 手順 | `sudo systemctl restart dashboard-Pal` → `pgrep -af PalServer-Linux-Shipping` |
+| 期待 | **PID が変わらない。** プレイヤーは切断されない。ダッシュボードは再読み込み後すぐ `online` に戻る |
+| NG の見方 | PID が消える → `systemctl show dashboard-Pal -p KillMode` が `process` になっていない（[運用メモ](operations.md#管理ツールを再起動したらゲームサーバも落ちた)） |
+| 備考 | 停止側も見る。`sudo systemctl stop dashboard-Pal` でゲームが生き残り、`start` で戻ってこられること |
 
 | ID | T-15 |
 |---|---|

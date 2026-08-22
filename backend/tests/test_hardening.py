@@ -263,6 +263,26 @@ def test_the_unit_keeps_tmp_shared_for_linuxgsm():
     assert "PrivateTmp=true" not in directives
 
 
+def test_the_unit_does_not_take_the_game_server_down_with_it():
+    """管理ツールを止めてもゲームサーバを道連れにしないこと。
+
+    LinuxGSM の start はゲームを tmux に預けるが、その tmux とゲーム本体は
+    管理ツールの子として生まれるのでこのユニットの cgroup に入る。
+    既定の KillMode=control-group だと、管理ツールを再起動しただけで
+    ゲームサーバまで落ちる（実機で発生）。**サーバの寿命を管理ツールの
+    寿命に結びつけない**のがこのユニットの最優先事項。
+    """
+    directives = _unit_directives("dashboard-Pal.service")
+    assert "KillMode=process" in directives
+
+
+def test_the_unit_does_not_cap_resources():
+    """cgroup にゲームサーバが同居するので、資源制限はゲームごと締めてしまう。"""
+    directives = _unit_directives("dashboard-Pal.service")
+    capped = [d for d in directives if d.startswith(("MemoryMax", "MemoryHigh", "CPUQuota", "TasksMax"))]
+    assert capped == [], capped
+
+
 def test_no_game_server_unit_template_is_shipped():
     """ゲームサーバの systemd 運用は本番から廃止した。
 
