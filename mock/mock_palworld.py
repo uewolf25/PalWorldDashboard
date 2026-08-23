@@ -70,6 +70,10 @@ class MockState:
     shutdowns: list[dict[str, Any]] = field(default_factory=list)
     stops: int = 0
 
+    # Steam アップデートが出ている状態の再現（issue #30）。
+    # 実機を待たずに検知バッジと更新カードを確かめられるようにする
+    update_available: bool = False
+
     # 障害注入用フラグ
     fail_save: bool = False
     fail_all: bool = False
@@ -88,6 +92,7 @@ class MockState:
         self.saves = 0
         self.shutdowns = []
         self.stops = 0
+        self.update_available = False
         self.fail_save = False
         self.fail_all = False
         self.fixed_fps = None
@@ -325,6 +330,22 @@ def mock_restart() -> dict[str, Any]:
     STATE.started_at = time.time()
     STATE.players = [_new_player(i) for i in range(3)]
     return {"running": STATE.running}
+
+
+@app.get("/__mock__/check-update")
+def mock_check_update() -> dict[str, Any]:
+    """pwserver check-update 相当。サーバの稼働状態とは無関係に答える。"""
+    return {
+        "available": STATE.update_available,
+        "detail": "[mock] Update available" if STATE.update_available
+                  else "[mock] No update available",
+    }
+
+
+@app.post("/__mock__/update-available")
+def mock_set_update_available(value: bool = True) -> dict[str, Any]:
+    STATE.update_available = value
+    return {"available": STATE.update_available}
 
 
 @app.post("/__mock__/reset")

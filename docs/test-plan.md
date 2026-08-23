@@ -60,8 +60,10 @@ cd /opt/dashboard-Pal && python3 scripts/check_secrets.py
 | `test_schedule_skip.py` | 13 | 予約の「今回はスキップ」 |
 | `test_monitor.py` | 13 | メトリクス記録、メモリ閾値アラートと cooldown、サーバ up/down 検知 |
 | `test_health.py` | 10 | サーバの生死判定、停止待ち / 起動待ち、判定できないときの倒し方 |
+| `test_updates.py` | 25 | アップデート検知（issue #30 Phase 1）— `check-update` の判定、判定不能を「更新なし」に丸めないこと、通知が1回だけ飛ぶこと、連続失敗の通知と復帰、状態の永続化、**扱えない構成では機能ごと出さないこと**、**サーバに触らないこと** |
 | `test_settings_form_js.py` | 5 | ゲーム設定フォームの入力挙動を node で実行して検証 |
 | `test_announce_enter_js.py` | 4 | IME の変換確定でアナウンスが誤送信されないこと |
+| `test_update_badge_js.py` | 3 | アップデート検知のバッジが上部バーに出る / 出ないこと |
 
 ### 1.4 単体テストで**確認できない**こと
 
@@ -175,6 +177,21 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 | 目的 | IME の変換確定でアナウンスが誤送信されないこと（issue #26） |
 | 手順 | アナウンス欄に日本語を入力し、変換候補を **Enter で確定**する |
 | 期待 | **送信されない**。確定後にもう一度 Enter で送信される |
+
+| ID | T-10b |
+|---|---|
+| 目的 | アップデート検知が動くこと（issue #30 Phase 1。**サーバには触らない**） |
+| 手順 | `curl -s localhost:8080/api/update \| python3 -m json.tool` → ダッシュボードの「アップデート」カードで「今すぐ確認」 |
+| 期待 | `supports_update: true`、`checked_at` が現在時刻に近い、`last_error: null`。カードに最終確認の時刻が出る。**この操作でサーバは止まらない**（`pwserver details` で確認） |
+| NG の見方 | `supports_update: false` なら `PAL_SERVICE_BACKEND` が `lgsm` でない。`last_error` に「判定できませんでした」が出るなら LinuxGSM の出力書式が変わっている（`~/pwserver check-update` を直接叩いて見比べる） |
+| 備考 | 実機で更新が出ていない期間は `available: false` のまま。検知の配線が生きているかは `checked_at` で見る |
+
+| ID | T-10c |
+|---|---|
+| 目的 | 実際に更新が出たとき、管理ツールから見えること |
+| 手順 | Palworld のアップデートが降ってきた日に、上部バーと Discord を確認 |
+| 期待 | 上部バーに「アップデートあり」バッジ。Discord に検知の通知が**1回だけ**（10分おきに繰り返さない）。`update-watch.sh` が適用したあと `available` が false に戻る |
+| 備考 | Phase 1 では**適用は cron 側**。管理ツールは検知して見せるだけ |
 
 ---
 
@@ -372,4 +389,4 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 | 設定ファイルだけ変更 | — | T-01〜T-03、T-14 |
 | プロセス制御の構成変更（バックエンド / サンドボックス） | 全件 | 全項目 |
 | ワールドが大きく育った | — | T-14、T-15（保存時間の再測定） |
-| Palworld のアップデート後 | 全件 | T-05、T-07、T-14 |
+| Palworld のアップデート後 | 全件 | T-05、T-07、T-10b、T-14 |

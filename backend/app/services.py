@@ -24,7 +24,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import httpx
 
@@ -32,6 +32,28 @@ logger = logging.getLogger(__name__)
 
 # LinuxGSM は端末向けに色を付けて出力する。ログに残す前に落とす
 _ANSI = re.compile(r"\x1B\[[0-9;]*[a-zA-Z]")
+
+# LinuxGSM の check-update は結果を人間向けの1行で書く。
+#   更新あり: [ INFO ] Check Update pwserver: Update available: ...
+#   更新なし: [  OK  ] Check Update pwserver: No update available
+# 「更新なし」の行にも "update available" が含まれるので、先に打ち消しを見る
+_NO_UPDATE = re.compile(r"no update available", re.IGNORECASE)
+_UPDATE = re.compile(r"update available", re.IGNORECASE)
+
+
+def parse_check_update(output: str) -> bool | None:
+    """`check-update` の出力から「更新があるか」を読む。
+
+    どちらとも書いていなければ None を返す。**「更新なし」に丸めないこと。**
+    LinuxGSM の出力書式が変わったときに、黙って「ずっと更新なし」になるのが
+    いちばん困る（現行 cron のロック残留と同じ壊れ方をする）。
+    """
+    if _NO_UPDATE.search(output):
+        return False
+    if _UPDATE.search(output):
+        return True
+    return None
+
 
 # `systemctl is-active` が非ゼロで返すが、コマンド自体は通っている状態。
 # ユニットが動いていないだけなので、事前チェックとしては成功扱いにする
@@ -116,6 +138,27 @@ class CommandResult:
         }
 
 
+@dataclass
+class UpdateCheck:
+    """`check-update` 1回ぶんの結果。"""
+
+    # コマンド自体が通ったか。false のときは available を信じないこと
+    # （「更新なし」と「確かめられなかった」を混ぜると、黙って止まる）
+    ok: bool
+    available: bool
+    # 判定に使った出力（ANSI 除去済み）。画面とログに出して後から辿れるようにする
+    detail: str = ""
+    error: str = ""
+
+    def as_dict(self) -> dict:
+        return {
+            "ok": self.ok,
+            "available": self.available,
+            "detail": self.detail,
+            "error": self.error,
+        }
+
+
 class GameService(Protocol):
     """ゲームサーバのプロセスを起動/停止する口。"""
 
@@ -145,6 +188,28 @@ class GameService(Protocol):
         ...
 
     async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class UpdateCapable(Protocol):
+    """Steam アップデートを扱える構成だけが持つ口（issue #30）。
+
+    **これを実装できるのは、権限昇格なしで更新できる構成だけ**。実機は
+    LinuxGSM 構成で、管理ツールと `pwserver` が同じユーザ・同じディレクトリで
+    動いているので昇格が要らない。素の SteamCMD 構成（`SystemdService`）は
+    `sudo -u steam steamcmd` が要るため、**あえて実装しない**。
+    「設定次第で動いたり動かなかったりする経路」をコードに作らないのが狙い。
+
+    Phase 2 でここに `apply_update()` / `backup()` が加わる。いまは検知だけ
+    なので、実装があるのに副作用は何も起きない。
+    """
+
+    async def check_update(self) -> UpdateCheck: ...
+
+
+def supports_update(service: object) -> bool:
+    """この構成で更新を扱えるか。UI と API の出し分けに使う。"""
+    return isinstance(service, UpdateCapable)
 
 
 class SystemdService:
@@ -349,6 +414,25 @@ class MockGameService:
     async def restart(self) -> CommandResult:
         return await self._post("restart")
 
+    async def check_update(self) -> UpdateCheck:
+        """モックの更新フラグを読む（開発用）。
+
+        実機を待たずに、検知バッジと更新カードの見た目を確かめられるようにする。
+        `POST /__mock__/update-available` で切り替える。
+        """
+        try:
+            client = await self._get_client()
+            resp = await client.get(f"{self.control_url}/__mock__/check-update")
+        except httpx.HTTPError as exc:
+            return UpdateCheck(False, False, "", f"モックサーバに接続できません: {exc}")
+        if resp.status_code >= 400:
+            return UpdateCheck(False, False, "", resp.text[:200])
+        try:
+            data = resp.json()
+        except ValueError:  # pragma: no cover
+            return UpdateCheck(False, False, "", "モックサーバの応答を解釈できません")
+        return UpdateCheck(True, bool(data.get("available")), str(data.get("detail", "")))
+
     async def preflight(self) -> CommandResult:
         """モックの制御エンドポイントに届くか確かめる。"""
         try:
@@ -453,6 +537,32 @@ class LgsmService:
     async def restart(self) -> CommandResult:
         return await self._run("restart")
 
+    async def check_update(self) -> UpdateCheck:
+        """Steam に更新が出ているか調べる（サーバには触らない）。
+
+        現行の update-watch.sh と同じ判定なので、この実機で動く実績がある。
+        `appmanifest_*.acf` の buildid を自前で読む必要も、AppID を決め打ちする
+        必要も無い（LinuxGSM が中でやっている）。
+        """
+        result = await self._run("check-update")
+        text = f"{result.stdout}\n{result.stderr}".strip()
+        if not result.ok:
+            return UpdateCheck(
+                ok=False, available=False, detail=text,
+                error=result.stderr or result.stdout or "check-update に失敗しました",
+            )
+        if result.simulated:
+            # dry_run では Steam に問い合わせていない。「更新なし」と断定しない
+            return UpdateCheck(ok=True, available=False, detail=text)
+
+        verdict = parse_check_update(text)
+        if verdict is None:
+            return UpdateCheck(
+                ok=False, available=False, detail=text,
+                error="check-update の出力から更新の有無を判定できませんでした",
+            )
+        return UpdateCheck(ok=True, available=verdict, detail=text)
+
     async def preflight(self) -> CommandResult:
         """管理スクリプトを実行できるかだけ確かめる。
 
@@ -504,6 +614,9 @@ class SimulatedService:
         self.unit = unit
         self.label = "空回しバックエンド（simulated）"
         self._running = True
+        # 更新の検知をテストから再現するためのつまみ
+        self.update_available = False
+        self.fail_check_update = False
 
     def describe(self, action: str) -> str:
         return f"[simulated] {action} {self.unit}".strip()
@@ -525,6 +638,17 @@ class SimulatedService:
     async def restart(self) -> CommandResult:
         self._running = True
         return await self._result("restart")
+
+    async def check_update(self) -> UpdateCheck:
+        """テストから update_available を書き換えて検知を再現する。"""
+        if self.fail_check_update:
+            return UpdateCheck(False, False, "", "[simulated] check-update に失敗しました")
+        return UpdateCheck(
+            ok=True,
+            available=self.update_available,
+            detail="[simulated] Update available" if self.update_available
+                   else "[simulated] No update available",
+        )
 
     async def preflight(self) -> CommandResult:
         return await self._result("preflight")

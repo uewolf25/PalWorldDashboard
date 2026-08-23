@@ -59,6 +59,10 @@ if [ ! -d "$DEV/SaveGames" ]; then
   head -c 32768  /dev/urandom > "$DEV/SaveGames/0/DEVWORLD/Players/00000001.sav"
 fi
 export PAL_SCHEDULE_STORE="$DEV/schedules.json"
+# アップデート検知（issue #30）。モックの更新フラグを見に行くので、
+# 実機を待たずにバッジと更新カードを確認できる
+export PAL_UPDATE_STATE="$DEV/update-state.json"
+export PAL_UPDATE_CHECK_INTERVAL=${PAL_UPDATE_CHECK_INTERVAL:-10}
 export PAL_PENDING_STORE="$DEV/pending-settings.json"
 export SCHEDULE_TIMEZONE=Asia/Tokyo
 # 開発では待たされたくないので予告を短くする
@@ -96,6 +100,7 @@ echo "  管理画面            : http://127.0.0.1:8080/"
 echo
 echo "  プレイヤーを増やす  : curl -XPOST http://127.0.0.1:8212/__mock__/join"
 echo "  サーバを落とす      : curl -XPOST 'http://127.0.0.1:8212/__mock__/fail?fail_all=true'"
+echo "  更新を出す          : curl -XPOST 'http://127.0.0.1:8212/__mock__/update-available?value=true'"
 echo
 
 wait

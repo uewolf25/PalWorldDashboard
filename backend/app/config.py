@@ -256,6 +256,24 @@ class Settings:
         default_factory=lambda: _env_float("ALERT_COOLDOWN_SEC", 1800.0)
     )
 
+    # --- Steam アップデートの検知（issue #30） ---
+    # check-update を叩く間隔（秒）。cron の update-watch.sh が */10 で回って
+    # いる間は、それより短くしても意味が無い
+    update_check_interval: float = field(
+        default_factory=lambda: _env_float("PAL_UPDATE_CHECK_INTERVAL", 600.0)
+    )
+    # 検知の状態。再起動をまたいで通知が重複しないように永続化する
+    update_state_store: Path = field(
+        default_factory=lambda: Path(
+            _env("PAL_UPDATE_STATE", "/var/lib/dashboard-Pal/update-state.json")
+        )
+    )
+    # 何回続けて失敗したら Discord に流すか。
+    # 「黙って検知が止まる」を作らないための仕掛け
+    update_fail_alert_threshold: int = field(
+        default_factory=lambda: _env_int("PAL_UPDATE_FAIL_ALERTS", 3)
+    )
+
     # --- Discord ---
     discord_webhook_url: str = field(default_factory=lambda: _env("DISCORD_WEBHOOK_URL", ""))
     discord_alert_webhook_url: str = field(
@@ -344,6 +362,7 @@ class Settings:
             "authenticated": authenticated,
             # サイドバーに出すログイン名。ログイン前には教えない
             "app_user": self.app_user if authenticated else "",
+            "update_check_interval": self.update_check_interval,
             "log_source": self.log_source,
             "dry_run": self.dry_run,
         }

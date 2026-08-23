@@ -73,6 +73,7 @@ def settings(tmp_path: Path, ini_path: Path) -> Settings:
         announce_store=tmp_path / "announcements.json",
         pending_store=tmp_path / "pending.json",
         presence_store=tmp_path / "presence.json",
+        update_state_store=tmp_path / "update-state.json",
         session_secret_file=tmp_path / "session-secret",
         pal_save_dir_raw=str(tmp_path / "SaveGames"),
         world_backup_dir=tmp_path / "world-backups",
@@ -91,6 +92,7 @@ def settings(tmp_path: Path, ini_path: Path) -> Settings:
         # 既定の180秒だと起動待ちで毎回待たされる
         restart_startup_timeout=0.05,
         monitor_interval=3600.0,
+        update_check_interval=3600.0,
         log_source="none",
     )
 

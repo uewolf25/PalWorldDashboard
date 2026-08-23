@@ -78,6 +78,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--accent-dim); color: #67c7f5;
 }
 .badge.production { background: #40202a; color: #ff8f8f; }
+/* アップデート検知。上部バーで気づけることが目的なので、環境バッジより強く出す */
+.updpill {
+  font-size: 12px; font-weight: 700; padding: 4px 11px; border-radius: 999px;
+  background: #3a2c12; color: #ffc44d; border: 1px solid #6b5320; white-space: nowrap;
+}
+.panel.updcard.on { border-color: #6b5320; }
 /* 実機に入っている版。環境バッジの隣で、主張はさせない */
 .brand .ver { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--muted2); }
 .navgroup { display: flex; flex-direction: column; gap: 4px; margin-top: 22px; }
@@ -1161,6 +1167,8 @@ const state = {
   refresher: null,   // 各画面の主タイマー
   timers: [],        // 同じ画面が持つ追加のタイマー（更新間隔が違うもの）
   statusTimer: null, // 上部バー用。画面を切り替えても止めない
+  update: null,      // アップデート検知の状態（supports_update の構成でだけ入る）
+  updateTimer: null, // 検知は10分間隔なので、画面もゆっくり見に行く
   ws: null,
 };
 
@@ -1269,6 +1277,17 @@ function buildTopbar() {
     facts.push(el("span", { text: cfg.pal_base_url.replace(/^https?:\/\//, "") }));
   }
   bar.appendChild(el("div", { class: "facts" }, facts));
+
+  // アップデートを検知していることが、どの画面からでも分かるようにする。
+  // 「気づいたら勝手に落ちていた」を無くすのがこの機能の第一の目的（issue #30）
+  if (state.update && state.update.available) {
+    bar.appendChild(el("span", {
+      class: "updpill", text: "アップデートあり",
+      title: "ダッシュボードの「アップデート」カードで詳細を確認できます",
+      onclick: () => setView("dashboard"),
+      style: "cursor:pointer",
+    }));
+  }
 
   // サーバ操作。停止中は「起動」だけを出す（落ちているサーバは止められない）
   const actions = el("div", { class: "actions" });
@@ -1404,6 +1423,7 @@ function renderDashboard(root) {
   const restartBox = el("div");
   const announceBox = el("div");
   const historyBox = el("div");
+  const updateBox = el("div");
   const nextBox = el("div");
   const feedBox = el("div");
 
@@ -1417,7 +1437,7 @@ function renderDashboard(root) {
   root.appendChild(restartBox);
   root.appendChild(el("div", { class: "dashgrid" }, [
     el("div", { class: "dashcol" }, [announceBox, historyBox]),
-    el("div", { class: "dashcol" }, [nextBox, feedBox]),
+    el("div", { class: "dashcol" }, [updateBox, nextBox, feedBox]),
   ]));
 
   // --- アナウンス送信 ---
@@ -1515,6 +1535,68 @@ function renderDashboard(root) {
         ? announcementTable(records.slice(0, historyLimit))
         : el("div", { class: "muted", style: "padding:0 22px 22px", text: "アナウンス履歴はまだありません" }),
     ]));
+  }
+
+  // --- アップデート ---
+  /** 検知の状態を出す。**適用はまだしない**（issue #30 Phase 1）。
+   *
+   *  ここで見せたいのは「更新があるか」だけではなく、**検知そのものが
+   *  生きているか**。最終確認の時刻を必ず出しているのはそのため。現行 cron の
+   *  いちばん痛い壊れ方は、ロックが残って検知が黙って止まることだった。
+   */
+  function paintUpdate() {
+    clear(updateBox);
+    const u = state.update;
+    if (!state.config || !state.config.supports_update || !u) return;
+
+    const checkBtn = gate(el("button", {
+      class: "more", text: u.checking ? "確認中…" : "今すぐ確認",
+      onclick: async () => {
+        try {
+          state.update = await post("/api/update/check");
+          paintUpdate();
+          buildTopbar();
+          toast(state.update.available ? "アップデートがあります" : "更新はありません", "ok");
+        } catch (e) { toast(e.message, "err"); }
+      },
+    }));
+
+    const rows = [];
+    if (u.available) {
+      rows.push(el("div", { class: "row", style: "gap:8px;margin-bottom:10px" },
+        el("span", { class: "updpill", text: "アップデートあり" })));
+      // 適用経路を隠さない。Phase 2 でここが管理ツール側に移る
+      rows.push(el("div", { class: "infobox", style: "margin-bottom:10px",
+        text: "適用は現行の update-watch.sh（cron）が行います。管理ツールからの"
+              + "予約・適用は次の段階で対応します。" }));
+    } else {
+      rows.push(el("div", { class: "small", style: "margin-bottom:10px", text: "更新はありません" }));
+    }
+
+    rows.push(el("div", { class: "small muted" },
+      u.checked_at ? "最終確認 " + fmtTs(u.checked_at) : "まだ確認していません"));
+
+    if (u.last_error) {
+      rows.push(el("div", { class: "small", style: "margin-top:8px;color:var(--warn)" },
+        "確認に失敗しています（" + u.fail_streak + "回連続）: " + u.last_error));
+    }
+    if (u.available && u.detail) {
+      rows.push(el("div", { class: "mono small muted", style: "margin-top:10px;white-space:pre-wrap",
+        text: u.detail.slice(0, 300) }));
+    }
+
+    updateBox.appendChild(el("div", { class: "panel updcard" + (u.available ? " on" : "") }, [
+      el("div", { class: "cardhead" }, [
+        el("div", { class: "t", text: "アップデート" }),
+        checkBtn,
+      ]),
+      ...rows,
+    ]));
+  }
+
+  async function loadUpdate() {
+    await refreshUpdateState();
+    paintUpdate();
   }
 
   // --- 次回の予定 ---
@@ -1787,6 +1869,7 @@ function renderDashboard(root) {
   paintAnnounce();
   loadTrends().then(tick);
   loadHistory();
+  loadUpdate();
   loadNext();
   loadFeed();
 
@@ -1794,6 +1877,8 @@ function renderDashboard(root) {
   // 傾向・予定・アクティビティは1秒ごとに取り直す必要がない。
   // ここを速くするとゲームサーバではなく管理ツール側の負荷になる
   state.timers.push(setInterval(() => { loadTrends(); loadNext(); loadFeed(); }, 30000));
+  // 検知は10分間隔。カードもその粒度で足りる
+  state.timers.push(setInterval(loadUpdate, 60000));
 }
 
 // --------------------------------------------------------------------------
@@ -3739,13 +3824,30 @@ $("backdrop").addEventListener("click", closeDrawer);
  */
 function startStatusPolling() {
   if (state.statusTimer) clearInterval(state.statusTimer);
+  if (state.updateTimer) clearInterval(state.updateTimer);
   const tick = async () => {
     try { state.status = await api("/api/status"); }
     catch (e) { /* 上部バーのために画面全体を壊さない */ }
     buildTopbar();
   };
+  const updTick = async () => { await refreshUpdateState(); buildTopbar(); };
   tick();
+  updTick();
   state.statusTimer = setInterval(tick, 5000);
+  // 検知そのものが10分間隔なので、これ以上速く見に行っても新しい情報は無い
+  state.updateTimer = setInterval(updTick, 60000);
+}
+
+/** アップデート検知の状態を取り直す。
+ *
+ *  ゲームサーバには問い合わせず、管理ツールが覚えている結果を読むだけ。
+ *  更新を扱えない構成では呼ばない（API も 501 を返す）。
+ */
+async function refreshUpdateState() {
+  if (!state.config || !state.config.supports_update) { state.update = null; return null; }
+  try { state.update = await api("/api/update"); }
+  catch (e) { /* バッジのために画面全体を壊さない */ }
+  return state.update;
 }
 
 async function start() {
