@@ -143,6 +143,26 @@ LinuxGSM 構成で `LOG_SOURCE=journald` のままだと、存在しないユニ
 | アップデート検知 | `~/batch/update-watch.sh`（cron から10分おき） |
 | そのログ | `~/batch/Log_update-watch/log_YYYYMMDD.log` |
 
+**管理ツールも `check-update` を叩くようになった**（既定10分おき / issue #30 Phase 1）。
+ただし読むだけで、適用は引き続き `update-watch.sh` が行う。**この cron はまだ消さないこと。**
+消すと更新が誰にも適用されなくなる。管理ツール側に適用と予約を移すのは Phase 2 で、
+そのときに cron を止める。
+
+管理ツールから見えるのは次の3つ。
+
+| 見たいこと | どこで |
+|---|---|
+| いま更新が出ているか | 上部バーのバッジ / ダッシュボードの「アップデート」カード |
+| 検知が生きているか | 同カードの「最終確認」の時刻 |
+| 検知が壊れていないか | 続けて失敗すると Discord に警告が飛ぶ（`PAL_UPDATE_FAIL_ALERTS`） |
+
+状態は `PAL_UPDATE_STATE`（既定 `/var/lib/dashboard-Pal/update-state.json`）に残る。
+
+```bash
+cat /var/lib/dashboard-Pal/update-state.json
+curl -s localhost:8080/api/update | python3 -m json.tool
+```
+
 ## 切り分け
 
 ### サーバ操作（起動 / 停止 / 再起動）が失敗する

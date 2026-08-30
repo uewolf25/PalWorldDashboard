@@ -44,6 +44,7 @@ from .restart import (
 from .scheduler import ACTION_LABELS, ACTIONS, ScheduleError, ServerScheduler
 from .services import build_service
 from .settings_ini import SettingsIniError, SettingsIniStore
+from .updates import UpdateWatcher
 from .world import WorldBackupError, WorldStore
 from .settings_schema import (
     CATEGORIES,
@@ -319,6 +320,19 @@ def create_app(
     # シーケンス進行中も同様に抑止する（猶予の計算に取りこぼしがあっても効くように）
     monitor.set_maintenance_probe(lambda: restart_manager.in_progress)
 
+    # Steam アップデートの検知（issue #30 / Phase 1）。読むだけで、
+    # サーバには触らない。更新を扱えない構成では supported が false になり、
+    # ループも API も画面も出ない
+    update_watcher = UpdateWatcher(
+        service,
+        notify,
+        interval=cfg.update_check_interval,
+        store_path=cfg.update_state_store,
+        fail_alert_threshold=cfg.update_fail_alert_threshold,
+    )
+    # 停止/起動シーケンスの最中に pwserver をもう1つ走らせない
+    update_watcher.set_busy_probe(lambda: restart_manager.in_progress)
+
     async def _observe_presence() -> None:
         """監視ループから入退室を観測する。
 
@@ -356,6 +370,7 @@ def create_app(
             app_logger.setLevel(logging.INFO)
         if start_background:
             monitor.start()
+            update_watcher.start()
             try:
                 scheduler.start()
             except Exception:  # pragma: no cover - タイムゾーン設定ミス等
@@ -372,6 +387,7 @@ def create_app(
                     "管理ツールを停止しました", f"環境: {cfg.env}", source="system", level="warn"
                 )
                 await monitor.stop()
+                await update_watcher.stop()
                 scheduler.shutdown()
                 await broker.stop()
             app_logger.removeHandler(handler)
@@ -397,6 +413,7 @@ def create_app(
     app.state.players_cache = players_cache
     app.state.restart = restart_manager
     app.state.scheduler = scheduler
+    app.state.update_watcher = update_watcher
     app.state.broker = broker
 
     _security = HTTPBasic(auto_error=False)
@@ -540,7 +557,12 @@ def create_app(
 
     @app.get("/api/config")
     async def get_config(authenticated: bool = Depends(is_authenticated)) -> dict[str, Any]:
-        return cfg.public_dict(authenticated)
+        # 更新を扱えるかは設定値ではなく構成（バックエンドの実装）で決まるので、
+        # Settings.public_dict ではなくここで足す
+        return {
+            **cfg.public_dict(authenticated),
+            "supports_update": update_watcher.supported,
+        }
 
     async def _fetch_status() -> dict[str, Any]:
         """ゲームサーバへの問い合わせ部分だけ。キャッシュの対象。"""
@@ -800,6 +822,32 @@ def create_app(
     ) -> dict[str, Any]:
         settings = await pal.settings()
         return settings if authenticated else mask_values(settings)
+
+    # ---- Steam アップデート ---------------------------------------------
+
+    def _require_update_support() -> None:
+        if not update_watcher.supported:
+            raise HTTPException(
+                501,
+                f"この構成（{cfg.pal_service_backend}）では"
+                "アップデートを扱えません。LinuxGSM 構成でのみ使えます",
+            )
+
+    @app.get("/api/update")
+    async def get_update() -> dict[str, Any]:
+        """検知の状態。ゲームサーバには問い合わせないので落ちていても答える。"""
+        return update_watcher.as_dict()
+
+    @app.post("/api/update/check", dependencies=auth)
+    async def check_update_now() -> dict[str, Any]:
+        """いま確かめる（画面の「今すぐ確認」）。
+
+        Phase 1 では読むだけ。更新があっても、適用するのは当面まだ
+        cron の update-watch.sh 側（issue #30 Phase 2 で引き取る）。
+        """
+        _require_update_support()
+        await update_watcher.check()
+        return update_watcher.as_dict()
 
     @app.get("/api/restart")
     async def get_restart_status() -> dict[str, Any]:
