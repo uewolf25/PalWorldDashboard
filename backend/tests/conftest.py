@@ -74,6 +74,8 @@ def settings(tmp_path: Path, ini_path: Path) -> Settings:
         pending_store=tmp_path / "pending.json",
         presence_store=tmp_path / "presence.json",
         update_state_store=tmp_path / "update-state.json",
+        restart_state_store=tmp_path / "restart-state.json",
+        runtime_state_store=tmp_path / "runtime-state.json",
         session_secret_file=tmp_path / "session-secret",
         pal_save_dir_raw=str(tmp_path / "SaveGames"),
         world_backup_dir=tmp_path / "world-backups",

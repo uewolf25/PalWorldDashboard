@@ -41,6 +41,7 @@ from .restart import (
     RestartManager,
     RestartValidationError,
 )
+from .runtime_state import RuntimeState
 from .scheduler import ACTION_LABELS, ACTIONS, ScheduleError, ServerScheduler
 from .services import build_service
 from .settings_ini import SettingsIniError, SettingsIniStore
@@ -316,6 +317,17 @@ def create_app(
         suppress_alerts=monitor.suppress_downtime_alerts,
         alert_grace=cfg.restart_alert_grace,
         startup_timeout=cfg.restart_startup_timeout,
+        # 管理ツールが不意に落とされてもゲームを止めたまま放置しないための
+        # 3点セット。進行状態をディスクに残し、停止時は危険な段階を避け、
+        # 起動時に中断を拾う（issue #41）
+        store_path=cfg.restart_state_store,
+        recover_max_age=cfg.restart_recover_max_age,
+        drain_timeout=cfg.restart_drain_timeout,
+    )
+    # 管理ツール自身の稼働記録。停止→起動が短時間で連続したかを
+    # プロセスをまたいで判定し、外部要因の再起動をそうと分かる形で通知する
+    runtime_state = RuntimeState(
+        cfg.runtime_state_store, quick_restart_sec=cfg.quick_restart_sec
     )
     # シーケンス進行中も同様に抑止する（猶予の計算に取りこぼしがあっても効くように）
     monitor.set_maintenance_probe(lambda: restart_manager.in_progress)
@@ -354,8 +366,25 @@ def create_app(
     )
     broker = LogBroker()
 
+    async def _recover_sequence() -> None:
+        """前回のシーケンスが途中で切れていないか確かめ、必要なら復旧する。
+
+        背景タスクとして起動時に1回だけ走る。ここで失敗しても管理ツールは
+        使えなければならないので、例外は握り潰してログに残すだけにする。
+        """
+        try:
+            result = await restart_manager.recover()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - 想定外
+            logger.exception("中断されたシーケンスの復旧に失敗しました")
+            return
+        if result:
+            logger.warning("中断されたシーケンスを処理しました: %s", result)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        recover_task: asyncio.Task | None = None
         broker.bind_loop()
         handler = BrokerLogHandler(broker)
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
@@ -376,15 +405,55 @@ def create_app(
             except Exception:  # pragma: no cover - タイムゾーン設定ミス等
                 logger.exception("スケジューラの起動に失敗しました")
             await broker.start(cfg.log_source, unit=cfg.pal_service_name, path=str(cfg.log_file))
+
+            # 停止→起動が数秒で連続していたら、人の操作ではまず起きない形。
+            # OS のパッケージ更新に伴う自動再起動を、受け取った側が
+            # そうと分かるようにしておく（issue #41）
+            startup = runtime_state.mark_started()
+            detail = f"環境: {cfg.env}"
+            if startup.quick and startup.gap is not None:
+                detail += (
+                    f"\n前回の停止から {startup.gap:.0f} 秒で復帰しています。"
+                    "OS のパッケージ更新などによる自動再起動の可能性があります。"
+                )
+            elif startup.unclean:
+                detail += (
+                    "\n前回は停止処理を通らずに終了しています"
+                    "（強制終了・OOM・電源断のいずれか）。"
+                )
+            if startup.drain == "timeout":
+                detail += "\n⚠️ 前回はシーケンスの途中で停止しています。"
             await announcer.discord_only(
-                "管理ツールを起動しました", f"環境: {cfg.env}", source="system"
+                "管理ツールを起動しました", detail, source="system",
+                level="warn" if (startup.suspect_external or startup.drain == "timeout") else "info",
             )
+
+            # 中断されたシーケンスの復旧。起動を待たせたくないので背景で回す
+            # （サーバの応答待ちで最大 restart_startup_timeout 秒かかる）
+            recover_task = asyncio.create_task(_recover_sequence(), name="restart-recover")
         try:
             yield
         finally:
             if start_background:
+                # ゲームサーバを触っている最中なら、終わるまで待ってから落ちる。
+                # 待ちきれなければ進行状態はディスクに残り、次の起動で拾われる
+                drain = await restart_manager.drain()
+                if recover_task is not None and not recover_task.done():
+                    recover_task.cancel()
+                runtime_state.mark_stopped(drain=drain)
+                detail = f"環境: {cfg.env}"
+                if drain == "cancelled":
+                    detail += "\n進行中だった予告を取り消しました。"
+                elif drain == "finished":
+                    detail += "\n進行中だったシーケンスの完了を見届けました。"
+                elif drain == "timeout":
+                    detail += (
+                        "\n⚠️ シーケンスの途中で停止します。"
+                        "次の起動で復旧を試みますが、サーバの状態を確認してください。"
+                    )
                 await announcer.discord_only(
-                    "管理ツールを停止しました", f"環境: {cfg.env}", source="system", level="warn"
+                    "管理ツールを停止しました", detail, source="system",
+                    level="crit" if drain == "timeout" else "warn",
                 )
                 await monitor.stop()
                 await update_watcher.stop()

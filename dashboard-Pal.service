@@ -13,6 +13,17 @@ ExecStart=/opt/dashboard-Pal/backend/.venv/bin/uvicorn app.main:app --host ${APP
 Restart=always
 RestartSec=5
 
+# ★ 停止/再起動シーケンスの途中で殺されないための猶予。
+#
+# OS のパッケージ更新のあと needrestart がこのユニットを自動で再起動する
+# （issue #41）。サーバを止めてから起こすまでの数十秒にそれが起きると、
+# ゲームサーバが落ちたまま管理ツールだけ戻ってくることになる。
+#
+# 管理ツールは SIGTERM を受けると RESTART_DRAIN_TIMEOUT 秒（既定 45 秒）
+# だけシーケンスの完了を待つので、systemd 側はそれより長く待つ。
+# 逆に短くすると、待っている途中で SIGKILL されて待った意味が無くなる
+TimeoutStopSec=90
+
 # ★ 管理ツールの停止/再起動でゲームサーバを道連れにしないための必須設定。
 #
 # LinuxGSM の start はゲームを tmux に預ける。その tmux とゲーム本体は
