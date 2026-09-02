@@ -75,6 +75,9 @@ journalctl -t sudo --since today                          # 誰がどこから s
 | `announcements.json` | アナウンス送信履歴（失敗も記録） | `PAL_ANNOUNCE_STORE` |
 | `pending-settings.json` | 反映待ちの設定変更 | `PAL_PENDING_STORE` |
 | `presence.json` | プレイヤーの入退室履歴 | `PAL_PRESENCE_STORE` |
+| `update-state.json` | Steam アップデート検知の状態 | `PAL_UPDATE_STATE` |
+| `restart-state.json` | 停止/再起動シーケンスの進行状態（中断の検知に使う） | `PAL_RESTART_STATE` |
+| `runtime-state.json` | 管理ツールが前回いつ止まったか | `PAL_RUNTIME_STATE` |
 | `session-secret` | ログインセッションの署名鍵 | `APP_SESSION_SECRET_FILE` |
 | `backups/` | `PalWorldSettings.ini` の世代バックアップ | `PAL_BACKUP_DIR` |
 | `world-backups/` | ワールドセーブのバックアップ | `PAL_WORLD_BACKUP_DIR` |
@@ -362,6 +365,73 @@ sudo grep ReadWritePaths /etc/systemd/system/dashboard-Pal.service
 sudo grep PAL_SETTINGS_INI /etc/dashboard-Pal.env
 ls -l "$(sudo grep PAL_SETTINGS_INI /etc/dashboard-Pal.env | cut -d= -f2)"
 ```
+
+### 朝6時台に管理ツールが勝手に停止→起動する（issue #41）
+
+**原因は OS の自動更新。** `apt-daily-upgrade.timer` が
+`unattended-upgrades` を回し、その後始末として `needrestart` が
+更新されたライブラリを掴んでいるサービスを自動で再起動する。
+その対象に `dashboard-Pal.service` が入っている。
+
+`apt-daily-upgrade.timer` は `OnCalendar=6:00` + `RandomizedDelaySec=60m` なので
+**毎朝 06:00〜07:00 のどこか**で、更新されたパッケージ数に応じて
+**0〜3回**（dpkg のトランザクションごとに1回）落とされる。
+
+確定させる手順:
+
+```bash
+# 1) 外部からの停止か、こちらのクラッシュか
+journalctl -u dashboard-Pal -o short-precise --since "06:00" --until "07:00" \
+  | grep -E "Stopping|Stopped|Started|Scheduled restart|Main process exited|Killed"
+systemctl show dashboard-Pal -p NRestarts
+
+# 2) needrestart が名指ししているか（これが出れば確定）
+awk '/^Log started/{ts=$0} /dashboard-Pal/{print ts" || "$0}' \
+  /var/log/unattended-upgrades/unattended-upgrades-dpkg.log | tail -20
+
+# 3) 他に再起動させている犯人がいないか
+grep -rl "dashboard-Pal" /etc/apt/apt.conf.d/ /etc/needrestart/ /etc/systemd/system/ /etc/cron.* 2>/dev/null
+```
+
+読み方:
+
+- `Stopping…` → `Stopped` の**正常停止**で、`Main process exited` も
+  `Scheduled restart` も出ず、`NRestarts=0` なら**外部からの `systemctl restart`**。
+  こちらのクラッシュではない（クラッシュなら `Restart=always` が発動して
+  `NRestarts` が増える）
+- 2) の出力に `systemctl restart ... dashboard-Pal.service ...` が出れば needrestart で確定
+- 3) がユニットファイルだけなら、他に犯人はいない
+
+**サーバ側の対処**（停止/起動そのものを止める）:
+
+```perl
+# /etc/needrestart/conf.d/dashboard-Pal.conf
+# ★ 代入(=)ではなく要素追加。$nrconf{override_rc} = {...} と書くと既定の除外設定ごと潰れる
+$nrconf{override_rc}{qr(^dashboard-Pal\.service$)} = 0;
+1;
+```
+
+除外すると更新後の古いライブラリを掴み続ける（`needrestart -r l` に
+常に載るのが正常な状態になる）ので、**予約の無い時間帯の週次再起動と
+セットで**入れること。
+
+**管理ツール側の備え**（除外を入れなくても効く / 除外を入れても残る経路への保険）:
+
+| 仕掛け | 何をするか | 環境変数 |
+|---|---|---|
+| 進行状態の永続化 | シーケンスの段が進むたび `restart-state.json` に残す | `PAL_RESTART_STATE` |
+| 停止時の drain | 予告中なら取り消し、サーバ操作中なら完了を待ってから落ちる | `RESTART_DRAIN_TIMEOUT` |
+| 起動時の recover | 中断されていたら、停止操作まで進んでいた場合だけ起こし直す | `RESTART_RECOVER_MAX_AGE` |
+| 再起動の見分け | 停止から数秒での復帰を「外部要因の可能性」として通知する | `PAL_QUICK_RESTART_SEC` |
+
+⚠ `RESTART_DRAIN_TIMEOUT` は**ユニットの `TimeoutStopSec`（90秒）より短くすること**。
+長いと待っている途中で SIGKILL され、待った意味が無くなる。
+
+**勝手に起こさない条件**を狭く取ってあるので、以下は通知だけで自動起動しない:
+
+- 予告中・ワールド保存中の中断（サーバに触れていないので、落ちているのは別の理由）
+- 停止シーケンスの中断（落ちているのが正しい姿）
+- `RESTART_RECOVER_MAX_AGE`（既定1時間）より古い中断
 
 ### 身に覚えのない「サーバ応答なし」通知
 

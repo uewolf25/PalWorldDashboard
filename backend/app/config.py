@@ -203,6 +203,39 @@ class Settings:
     restart_debounce_sec: float = field(
         default_factory=lambda: _env_float("RESTART_DEBOUNCE_SEC", 60.0)
     )
+    # シーケンスの進行状態の保存先。
+    # 管理ツールは自分の意思と無関係に落とされることがある（OS のパッケージ更新に
+    # 伴う needrestart の自動再起動 / issue #41）。メモリ上の進行状態だけだと
+    # 「サーバを止めたが起こす前に管理ツールが消えた」場合に誰も気づけないので、
+    # 次の起動で拾えるようディスクに残す
+    restart_state_store: Path = field(
+        default_factory=lambda: Path(
+            _env("PAL_RESTART_STATE", "/var/lib/dashboard-Pal/restart-state.json")
+        )
+    )
+    # 管理ツールの停止時、サーバに触っている最中のシーケンスを待つ上限（秒）。
+    # ★ systemd の TimeoutStopSec より必ず短くすること。長いと待っている途中で
+    #   SIGKILL され、待った意味が無くなる
+    restart_drain_timeout: float = field(
+        default_factory=lambda: _env_float("RESTART_DRAIN_TIMEOUT", 45.0)
+    )
+    # 中断されたシーケンスを救済起動してよい上限（秒）。これより古い中断は
+    # 通知だけにする。何時間も前に止めたサーバを、管理ツールの都合で
+    # 勝手に起こさないため
+    restart_recover_max_age: float = field(
+        default_factory=lambda: _env_float("RESTART_RECOVER_MAX_AGE", 3600.0)
+    )
+    # 管理ツール自身の稼働記録（前回いつ止まったか）の保存先。
+    # 短時間の停止→起動を「外部要因の可能性」として見分けるために使う
+    runtime_state_store: Path = field(
+        default_factory=lambda: Path(
+            _env("PAL_RUNTIME_STATE", "/var/lib/dashboard-Pal/runtime-state.json")
+        )
+    )
+    # 停止から何秒以内の復帰を「短時間での再起動」とみなすか
+    quick_restart_sec: float = field(
+        default_factory=lambda: _env_float("PAL_QUICK_RESTART_SEC", 60.0)
+    )
     # 予告アナウンスの既定文面。{time} が残り時間に置き換わる
     restart_announce_template: str = field(
         default_factory=lambda: _env(

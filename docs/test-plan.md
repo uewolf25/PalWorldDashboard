@@ -49,6 +49,9 @@ cd /opt/dashboard-Pal && python3 scripts/check_secrets.py
 | `test_scheduler.py` | 36 | 予約の CRUD、バリデーション、永続化と再読み込み、発火から再起動への連動、予約ごとの予告時間 |
 | `test_services.py` | 41 | バックエンド選択（既定は lgsm・systemd は廃止扱い）、事前チェックの合否判定、LinuxGSM 経路、失敗の記録、**常駐プロセスに標準出力を握られても戻ること** |
 | `test_restart.py` | 42 | 予告→保存→停止の順序、保存失敗時の中止、キャンセル、二重実行の拒否、デバウンス、事前中止と救済起動、**戻ってこないときの打ち切りと強制解除、起動を見届けてからの完了** |
+| `test_restart_recover.py` | 19 | 管理ツールが不意に停止させられたときの守り（issue #41）— 停止操作まで進んだ中断の救済起動、**サーバに触れていない中断では起こさないこと**、同じ中断を二度拾わないこと、**復旧の最中にもう一度落とされても記録が消えないこと**、停止時の drain |
+| `test_runtime_state.py` | 8 | 管理ツール自身の稼働記録 — 短時間での再起動の検知、停止処理を通らずに消えた場合の検知、壊れた記録で起動を止めないこと |
+| `test_lifespan_restart_safety.py` | 4 | 起動/停止の配線（`start_background=True` でしか通らない経路）— 外部要因の再起動をそうと分かる形で通知すること、起動時に中断を拾うこと |
 | `test_logstream_levels.py` | 33 | ログ行の区分判定、stderr（＝journald）への出力、`LOG_LEVEL` の切り替えと不正値 |
 | `test_world.py` | 30 | ワールドセーブのバックアップ、世代管理、復元、パストラバーサル防止 |
 | `test_presence.py` | 29 | 入退室の検知と履歴、永続化 |
@@ -335,6 +338,26 @@ sudo -u mntuser git -C /opt/dashboard-Pal log --oneline -1     # 試験対象の
 | 手順 | `crontab -l` を確認。`monitor` やアップデート適用が動く時間帯と、予約の時間帯を突き合わせる |
 | 期待 | 重ならない。重なる場合は片方をずらす |
 | 備考 | `update-watch.sh` はアップデート検知後30分待ってから適用する。その窓と予約が重なると両方がサーバを止めにいく |
+
+| ID | T-28 |
+|---|---|
+| 目的 | 管理ツールを再起動しても、ゲームサーバが落ちたまま残らないこと（issue #41） |
+| 手順 | 予約なしで再起動シーケンスを開始し、**`service_stop` が出た直後**に別端末から `sudo systemctl restart dashboard-Pal` を打つ |
+| 期待 | 起動後に「中断された再起動シーケンスを検知しました」が Discord に飛び、ゲームサーバが起動している。`/api/restart/status` の steps に `interrupted` と `recover_start` が並ぶ |
+| 備考 | 単体テストでは「起動コマンドを打ったこと」までしか見られない。実機のプロセスが本当に上がるかはここで見る |
+
+| ID | T-29 |
+|---|---|
+| 目的 | 停止時に、サーバ操作中のシーケンスの完了を待つこと（issue #41） |
+| 手順 | 再起動シーケンスが `restarting` の段階に入ったところで `sudo systemctl stop dashboard-Pal` を打ち、`time` で所要時間を測る |
+| 期待 | 即座には止まらず、シーケンス完了まで待ってから停止する（最大 `RESTART_DRAIN_TIMEOUT` 秒）。journal に「管理ツールの停止を最大N秒待ちます」が出る |
+| 備考 | `RESTART_DRAIN_TIMEOUT` < ユニットの `TimeoutStopSec`（90秒）であることも併せて確認する。逆転していると待っている途中で SIGKILL される |
+
+| ID | T-30 |
+|---|---|
+| 目的 | OS の自動更新による再起動が、そうと分かる形で通知されること（issue #41） |
+| 手順 | `sudo systemctl restart dashboard-Pal` を打つ（＝停止から数秒で復帰させる） |
+| 期待 | 起動通知に「前回の停止から N 秒で復帰しています。OS のパッケージ更新などによる自動再起動の可能性があります」が付き、レベルが warn になる |
 
 ---
 

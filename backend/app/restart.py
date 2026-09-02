@@ -13,6 +13,10 @@
     1. 実行部（保存以降）に打ち切り時間を掛ける
     2. タスクが例外処理を通らずに終わった場合も done コールバックで終端化する
     3. それでも残ったときのために、操作者が release() で解除できる
+- **管理ツールが不意に消えても、ゲームを落としたまま放置しない。** 進行状態は
+  ディスクにも残す。停止時は危険な段階を避けてから終わり（drain）、次の起動で
+  中断を拾って起こし直す（recover）。OS のパッケージ更新に伴う needrestart の
+  自動再起動で、数秒のうちに2〜3回落とされる経路が実在する（issue #41）
 
 Discord へは開始時と完了時、それに中止/キャンセル時だけ流す。
 予告の途中経過まで流すとチャンネルが荒れるため、ゲーム内だけに出す。
@@ -21,9 +25,11 @@ Discord へは開始時と完了時、それに中止/キャンセル時だけ�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 from .announce import Announcer, render_template
@@ -59,6 +65,10 @@ ACTIVE_PHASES: tuple[Phase, ...] = ("announcing", "saving", "restarting")
 # タイムアウトを持っているので、ここは「そのどれもが返ってこなかった」場合に
 # だけ効く最後の砦。正常な再起動では絶対に届かない長さにしておくこと
 DEFAULT_SEQUENCE_TIMEOUT = 900.0
+
+# ディスクに残すステップ数の上限。判断に使うのは直近の数段だけなので、
+# 長い予告で膨らんだ steps をそのまま書き続けない
+PERSISTED_STEPS = 20
 
 
 def humanize(seconds: float) -> str:
@@ -188,6 +198,9 @@ class RestartManager:
         suppress_alerts: Callable[[float], None] | None = None,
         alert_grace: float = 180.0,
         startup_timeout: float = 180.0,
+        store_path: Path | None = None,
+        recover_max_age: float = 3600.0,
+        drain_timeout: float = 45.0,
     ) -> None:
         self._pal = pal
         self._announcer = announcer
@@ -219,6 +232,15 @@ class RestartManager:
         # Restart=）に任せる。systemd 固有の設定ではない
         self.control_process = control_process
 
+        # 進行状態の保存先。None なら永続化しない（テストや一時起動向け）。
+        # 「サーバを止めたが起こす前に管理ツールが消えた」を次の起動で
+        # 拾えるようにするためだけのファイルで、画面はこれを読まない
+        self.store_path = Path(store_path) if store_path else None
+        # 中断されたシーケンスを救済起動してよい上限（秒）
+        self.recover_max_age = recover_max_age
+        # 管理ツールの停止時に、サーバに触っている最中のシーケンスを待つ上限（秒）
+        self.drain_timeout = drain_timeout
+
         self.status = RestartStatus()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -244,6 +266,64 @@ class RestartManager:
         )
         logger.info("%sシーケンス: %s (ok=%s) %s",
                     MODE_LABELS.get(status.mode, ""), name, ok, detail)
+        # 段が進むたびに残す。どこまで進んだところで消されたのかが、
+        # 次の起動で「起こし直すべきか」を決める唯一の材料になる
+        self._persist(status)
+
+    # ---- 永続化 --------------------------------------------------------
+
+    def _record(self, status: RestartStatus) -> dict[str, Any]:
+        """ディスクに残す最小限。画面用の派生値は入れない。"""
+        return {
+            "phase": status.phase,
+            "mode": status.mode,
+            "reason": status.reason,
+            "schedule_id": status.schedule_id,
+            "started_at": status.started_at,
+            "finished_at": status.finished_at,
+            "message": status.message,
+            "steps": status.steps[-PERSISTED_STEPS:],
+            "saved_at": time.time(),
+        }
+
+    def _persist(self, status: RestartStatus) -> None:
+        """進行状態をディスクに残す。
+
+        現役の status だけを書く。強制解除（release）されたあとに遅れて
+        終わったシーケンスが、解除後の記録を上書きしないようにするため。
+
+        書けなくてもシーケンスは止めない。ここで例外を投げると
+        「保存先が無いせいでサーバの再起動が失敗する」という筋の悪い
+        壊れ方をする。
+        """
+        if self.store_path is None or status is not self.status:
+            return
+        try:
+            self.store_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.store_path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(self._record(status), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(self.store_path)
+        except OSError as exc:
+            logger.warning("シーケンスの進行状態を保存できません: %s", exc)
+
+    def _load_record(self) -> dict[str, Any] | None:
+        """中断されたまま終わっている記録を読む。無ければ None。"""
+        if self.store_path is None or not self.store_path.is_file():
+            return None
+        try:
+            raw = json.loads(self.store_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("シーケンスの進行状態を読み込めません: %s", exc)
+            return None
+        if not isinstance(raw, dict):
+            return None
+        # 終端状態で終わっていれば、前回は最後まで進んでいる
+        if raw.get("phase") not in ACTIVE_PHASES:
+            return None
+        return raw
 
     # ---- 起動/キャンセル ------------------------------------------------
 
@@ -298,6 +378,7 @@ class RestartManager:
             message=f"{humanize(lead)}後に{label}します" if lead else f"まもなく{label}します",
         )
         self.status = status
+        self._persist(status)
         task = asyncio.create_task(
             self._run(status, reason, template, offsets, mode, schedule_id),
             name=f"{mode}-sequence",
@@ -319,6 +400,7 @@ class RestartManager:
             f"{MODE_LABELS.get(status.mode, '再起動')}シーケンスが"
             "最後まで進みませんでした（サーバの状態を確認してください）"
         )
+        self._persist(status)
         logger.warning("%sシーケンスが %s のまま終了しました", status.mode, status.phase)
 
     def cancel(self) -> bool:
@@ -356,8 +438,8 @@ class RestartManager:
             message=f"{label}シーケンスの追跡を解除しました（サーバの状態を確認してください）",
             steps=list(previous.steps),
         )
-        self._step(released, "released", ok=False, detail=f"{phase} で解除（{reason}）")
         self.status = released
+        self._step(released, "released", ok=False, detail=f"{phase} で解除（{reason}）")
 
         # 走っているタスクは必ず止める。放っておくとシーケンスのロックを
         # 掴んだままになり、次に始めたシーケンスがロック待ちで動けなくなる
@@ -378,6 +460,237 @@ class RestartManager:
                 await self._task
             except asyncio.CancelledError:
                 pass
+
+    async def _wait_for_task(self, timeout: float) -> bool:
+        """進行中のタスクの終了を待つ。待ちきれなくてもタスクは殺さない。
+
+        `await task` を wait_for で包むと、タイムアウト時にその task ごと
+        キャンセルされる（待つのをやめたつもりが、シーケンス自体を
+        止めてしまう）。asyncio.wait は待つだけで手を出さない。
+        """
+        task = self._task
+        if task is None or task.done():
+            return True
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        return bool(done)
+
+    # ---- 不意の停止からの復旧 (issue #41) --------------------------------
+
+    async def recover(self) -> dict[str, Any] | None:
+        """前回のプロセスがシーケンスの途中で消えていないか調べ、必要なら起こし直す。
+
+        管理ツールは自分の意思と無関係に止められる。OS のパッケージ更新の
+        あと needrestart が `systemctl restart` を打つためで、数秒のうちに
+        2〜3回落とされることもある（issue #41）。
+
+        まずいのは**停止コマンドを打ってから起動コマンドを打つまで**の数十秒に
+        それが起きた場合で、ゲームサーバは落ちたまま、管理ツールの進行状態は
+        メモリごと消える。誰も操作していないので誰も気づかず、朝まで
+        落ちっぱなしになる。
+
+        起動時にここを通しておけば、その一番痛い形だけは防げる。
+
+        **勝手に起こしてよい場合を狭く取っている。** 起こすのは
+        「再起動シーケンスが停止操作まで進んでいた」ときだけ。予告や保存の
+        段階で切れていたならサーバには触れていないし、停止シーケンスなら
+        落ちているのが正しい。そこで起こすと、こちらの都合で操作者の
+        意図を上書きしてしまう。
+
+        戻り値は何をしたかの要約（拾うものが無ければ None）。
+        """
+        record = self._load_record()
+        if record is None:
+            return None
+
+        phase = str(record.get("phase"))
+        raw_mode = record.get("mode")
+        mode: Mode = raw_mode if raw_mode in ("restart", "stop") else "restart"
+        label = MODE_LABELS.get(mode, mode)
+        saved_at = record.get("saved_at")
+        age = (
+            max(0.0, time.time() - float(saved_at))
+            if isinstance(saved_at, (int, float))
+            else None
+        )
+        started_at = record.get("started_at")
+
+        status = RestartStatus(
+            phase="failed",
+            mode=mode,
+            reason="中断されたシーケンスの復旧",
+            schedule_id=record.get("schedule_id"),
+            started_at=float(started_at) if isinstance(started_at, (int, float)) else None,
+            finished_at=time.time(),
+            steps=[s for s in (record.get("steps") or []) if isinstance(s, dict)],
+        )
+        # ★ ディスク上の記録は、復旧の結末が出るまで書き換えない。
+        # needrestart は数秒のうちに2〜3回落としてくる。ここで先に
+        # 「処理済み」と書いてしまうと、復旧の最中に殺された回で記録だけ
+        # 消えて、ゲームサーバが落ちたまま次の起動が素通りする。
+        # status を self.status に載せるのは、起動コマンドが通ったあと
+        # （＝もう一度やり直す必要が無くなったあと）にする
+        self._step(
+            status,
+            "interrupted",
+            ok=False,
+            detail=f"前回の{label}シーケンスが {phase} の段階で中断されました",
+        )
+        logger.warning(
+            "中断された%sシーケンスを検知しました (phase=%s)", label, phase
+        )
+
+        # サーバを操作する可能性があるので、通常のシーケンスと同じ鍵を取る。
+        # 起動直後に予約が発火した場合と噛み合わないようにするため
+        async with self._lock:
+            outcome, level = await self._decide_recovery(status, phase, mode, age)
+
+        status.finished_at = time.time()
+        self.status = status
+        self._persist(status)
+
+        detail = f"前回の{label}シーケンスが `{phase}` の段階で途切れていました"
+        if age is not None:
+            detail += f"（{humanize(age)}前）"
+        detail += (
+            f"。\n{status.message}\n\n"
+            "管理ツールが OS のパッケージ更新などで再起動された可能性があります。"
+        )
+        await self._announcer.discord_only(
+            f"中断された{label}シーケンスを検知しました",
+            detail,
+            source="system",
+            level=level,
+        )
+        return {
+            "outcome": outcome,
+            "phase": phase,
+            "mode": mode,
+            "age": age,
+            "message": status.message,
+        }
+
+    async def _decide_recovery(
+        self, status: RestartStatus, phase: str, mode: Mode, age: float | None
+    ) -> tuple[str, str]:
+        """中断された記録と実サーバの状態から、何をするかを決めて実行する。
+
+        戻り値は (何をしたか, 通知のレベル)。
+        """
+        label = MODE_LABELS.get(mode, mode)
+        if await self._health.running():
+            status.phase = "done"
+            status.message = (
+                f"中断された{label}シーケンスを検知しましたが、サーバは動いています"
+            )
+            return "running", "warn"
+        elif mode == "stop":
+            status.phase = "done"
+            status.message = (
+                "停止シーケンスの途中で中断されましたが、サーバは停止済みです"
+            )
+            return "stopped_as_intended", "warn"
+        elif phase in ("announcing", "saving"):
+            # 予告と保存しかしていない＝サーバには手を出していない。
+            # 落ちているのは別の理由なので、こちらの判断で起こさない
+            status.message = (
+                "サーバが停止していますが、中断されたシーケンスは"
+                "停止操作まで進んでいません（別の原因で落ちています）"
+            )
+            return "not_touched", "crit"
+        elif not self.control_process:
+            status.message = (
+                "サーバが停止していますが、この構成ではプロセス制御をしないため"
+                "起動し直せません"
+            )
+            return "no_control", "crit"
+        elif age is not None and 0 < self.recover_max_age < age:
+            # 何時間も前の中断を今さら起こすと、その後に人が意図して
+            # 止めた可能性を踏み潰す。報せるだけにする
+            status.message = (
+                f"サーバが停止していますが、中断から{humanize(age)}経っているため"
+                "自動では起動しません"
+            )
+            return "too_old", "crit"
+        return await self._recover_start(status)
+
+    async def _recover_start(self, status: RestartStatus) -> tuple[str, str]:
+        """中断のせいで落ちたままになっているサーバを起こし直す。"""
+        status.message = "中断された再起動の続きとして、サーバを起動しています"
+        result = await self._service.start()
+        self._step(
+            status, "recover_start", ok=result.ok, detail=result.stdout or result.stderr
+        )
+        self._suppress_downtime(self.alert_grace)
+        if not result.ok:
+            status.phase = "failed"
+            status.message = f"中断された再起動の復旧に失敗しました: {result.stderr}"
+            return "rescue_failed", "crit"
+
+        # 起動コマンドが通ったので、もうやり直す必要は無い。ここで初めて
+        # ディスク上の中断記録を終端させる（応答を待っている間にまた
+        # 落とされても、次の起動で二重に起こしに行かないように）
+        status.phase = "done"
+        status.message = "中断された再起動を復旧しました（サーバを起動しました）"
+        status.finished_at = time.time()
+        self.status = status
+        self._persist(status)
+
+        await self._wait_until_up(status, check=True)
+        if status.startup_confirmed is False:
+            status.message = (
+                "中断された再起動を復旧しましたが、サーバの応答をまだ確認できていません"
+            )
+            return "rescued_unconfirmed", "warn"
+        return "rescued", "warn"
+
+    async def drain(self, timeout: float | None = None) -> str:
+        """管理ツールが止まる前に、進行中のシーケンスを安全な形にして返す。
+
+        `systemctl restart` は SIGTERM を送ってから `TimeoutStopSec` だけ待つ。
+        その猶予を使って、一番まずい形（サーバを止めた直後に消える）を避ける。
+
+        - **予告中**なら取り消す。ここで待っても数分先の話で、待つだけ無駄。
+          取り消さずに消えると、ゲーム内には予告だけ流れて何も起きない
+        - **保存/停止/起動の最中**なら終わるまで待つ。ここを待ちきれば、
+          ゲームサーバは必ず起動済みか停止済みのどちらかになる
+
+        待ちきれなかったときは、進行状態をディスクに残したまま落ちる。
+        次の起動で recover() が拾う。
+
+        戻り値: idle / cancelled / finished / timeout
+        """
+        status = self.status
+        if not status.active:
+            return "idle"
+
+        label = MODE_LABELS.get(status.mode, status.mode)
+        limit = self.drain_timeout if timeout is None else timeout
+
+        if status.phase == "announcing":
+            logger.warning("管理ツールが停止するため、%s予告を取り消します", label)
+            self.cancel()
+            # キャンセル後の後始末（ゲーム内アナウンスと Discord 通知）だけ
+            # 見届ける。ここは秒で終わるので長くは待たない
+            if not await self._wait_for_task(min(limit, 15.0)):  # pragma: no cover
+                logger.warning("%s予告の取り消しを見届けられませんでした", label)
+            return "cancelled"
+
+        logger.warning(
+            "%sシーケンスがサーバを操作中です。管理ツールの停止を最大%.0f秒待ちます",
+            label, limit,
+        )
+        if not await self._wait_for_task(limit):
+            # 待つのをやめてもシーケンス自体は止めない。SIGKILL されるまでの
+            # 数十秒で起動コマンドまで進めるかもしれないし、進めなくても
+            # 進行状態はディスクに残っている
+            logger.error(
+                "%sシーケンスが%.0f秒で終わりませんでした。"
+                "中断された状態で停止します（次の起動で復旧を試みます）",
+                label, limit,
+            )
+            return "timeout"
+        logger.info("%sシーケンスの完了を見届けました", label)
+        return "finished"
 
     # ---- 本体 ----------------------------------------------------------
 
@@ -431,6 +744,7 @@ class RestartManager:
                     # --- ワールド保存 ---
                     status.phase = "saving"
                     status.message = "ワールドを保存しています"
+                    self._persist(status)
                     try:
                         await self._pal.save()
                         self._step(status, "world_save")
@@ -446,6 +760,7 @@ class RestartManager:
                         status.phase = "failed"
                         status.message = f"{cause}ため{label}を中止しました: {exc}"
                         status.finished_at = time.time()
+                        self._persist(status)
                         await self._announcer.send(
                             f"{cause}ため{label}を中止しました。", source=mode, reason=reason,
                         )
@@ -465,6 +780,7 @@ class RestartManager:
                     # --- 停止 → 保留中の設定変更を反映 → （再起動なら）起動 ---
                     status.phase = "restarting"
                     status.message = f"サーバを{label}しています"
+                    self._persist(status)
                     try:
                         await self._shutdown(status, mode, schedule_id)
                     except ServiceControlUnavailable as exc:
@@ -476,6 +792,7 @@ class RestartManager:
                             "（サーバは動いたままです）"
                         )
                         status.finished_at = time.time()
+                        self._persist(status)
                         await self._announcer.send(
                             f"サーバーの操作ができないため{label}を取りやめました。",
                             source=mode,
@@ -494,6 +811,7 @@ class RestartManager:
                 status.phase = "done"
                 status.message = f"{label}が完了しました"
                 status.finished_at = time.time()
+                self._persist(status)
                 detail = f"理由: {reason}"
                 applied = status.applied
                 if applied and applied.get("applied"):
@@ -534,6 +852,7 @@ class RestartManager:
                     "（サーバの状態を確認してください）"
                 )
                 status.finished_at = time.time()
+                self._persist(status)
                 await self._announcer.discord_only(
                     f"サーバー{label}が終わりません",
                     f"{limit}待っても完了しなかったので打ち切りました。\n"
@@ -547,6 +866,7 @@ class RestartManager:
                 status.phase = "cancelled"
                 status.message = f"{label}はキャンセルされました"
                 status.finished_at = time.time()
+                self._persist(status)
                 self._step(status, "cancelled")
                 await self._announcer.send(
                     f"サーバー{label}はキャンセルされました。", source=mode, reason=reason
@@ -564,6 +884,7 @@ class RestartManager:
                 status.phase = "failed"
                 status.message = f"{label}に失敗しました: {exc}"
                 status.finished_at = time.time()
+                self._persist(status)
                 await self._announcer.discord_only(
                     f"サーバー{label}に失敗しました", str(exc), source=mode, level="crit", reason=reason
                 )
